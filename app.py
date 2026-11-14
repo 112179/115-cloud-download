@@ -46,6 +46,29 @@ _rename_times: deque[float] = deque()
 _rename_block_until = 0.0
 
 
+def wait_rename_slot():
+    """后台任务用：阻塞直到可以安全发一次改名请求"""
+    while True:
+        now = time.time()
+        if _rename_block_until > now:
+            time.sleep(min(5.0, _rename_block_until - now))
+            continue
+        while _rename_times and now - _rename_times[0] > 3600:
+            _rename_times.popleft()
+        if _rename_times:
+            wait = RENAME_MIN_INTERVAL - (now - _rename_times[-1])
+            if wait > 0:
+                time.sleep(wait)
+                continue
+        if sum(1 for t in _rename_times if now - t < 60) >= RENAME_MAX_PER_MIN:
+            time.sleep(5)
+            continue
+        if len(_rename_times) >= RENAME_MAX_PER_HOUR:
+            time.sleep(30)
+            continue
+        return
+
+
 def rename_gate():
     now = time.time()
     if _rename_block_until > now:
@@ -216,6 +239,8 @@ API_PREFIX = (
     "/rename",
     "/ai",
     "/chat",
+    "/auto_rename",
+    "/jobs",
     "/login/start",
     "/login/status",
 )
@@ -602,16 +627,8 @@ def folders(cid: str = "0", refresh: int = 0):
         hit = _folder_cache.get(cid)
         if hit and now - hit[0] < FOLDER_TTL:
             return {**hit[1], "cached": True}
-    c = get_client()
-    r = c.fs_files({"cid": cid, "limit": 1150, "offset": 0, "show_dir": 1})
-    if not r.get("state"):
-        raise HTTPException(400, str(r))
-    items = r.get("data") or []
-    dirs = [
-        {"cid": str(it["cid"]), "name": it["n"]}
-        for it in items
-        if not it.get("sha")
-    ]
+    items = list_dir_items(cid, 1150, 0)
+    dirs = [{"cid": it["id"], "name": it["name"]} for it in items if it["is_dir"]]
     data = {"cid": str(cid), "folders": dirs}
     _folder_cache[cid] = (now, data)
     return {**data, "cached": False}
@@ -761,30 +778,80 @@ def rename_apply(req: RenameApplyReq):
 # ---------- 批量改名任务 ----------
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+JOBS_FILE = BASE / "jobs.json"
+
+
+def save_jobs():
+    try:
+        JOBS_FILE.write_text(json.dumps(_jobs, ensure_ascii=False))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_jobs():
+    try:
+        data = json.loads(JOBS_FILE.read_text())
+        if isinstance(data, dict):
+            _jobs.update(data)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_DIR_ORDER = ["web", "app", "aps"]
+
+
+def list_dir_items(cid: str, limit: int = 300, offset: int = 0) -> list[dict]:
+    """统一目录读取：web → app → aps，逐个降级，成功的排到前面"""
+    global _DIR_ORDER
+    c = get_client()
+    last = None
+    funcs = {
+        "web": lambda: c.fs_files({"cid": cid, "limit": limit, "offset": offset, "show_dir": 1}),
+        "app": lambda: c.fs_files_app({"cid": cid, "limit": limit, "offset": offset, "show_dir": 1}),
+        "aps": lambda: c.fs_files_aps({"cid": cid, "limit": limit, "offset": offset, "show_dir": 1}),
+    }
+    for key in list(_DIR_ORDER):
+        try:
+            r = funcs[key]()
+            if r.get("state"):
+                if _DIR_ORDER[0] != key:
+                    _DIR_ORDER.remove(key)
+                    _DIR_ORDER.insert(0, key)
+                return [
+                    {
+                        "id": str(x.get("fid") or x.get("cid")),
+                        "name": x.get("n") or x.get("fn") or "",
+                        "is_dir": not x.get("sha"),
+                        "size": x.get("s") or 0,
+                    }
+                    for x in (r.get("data") or [])
+                ]
+            last = r
+        except Exception as e:  # noqa: BLE001
+            last = e
+    raise HTTPException(503, f"目录读取失败：{last}")
 
 
 def collect_files(cid: str, recursive: bool, cap: int = 3000) -> list[dict]:
-    c = get_client()
     out: list[dict] = []
     q = deque([cid])
     while q and len(out) < cap:
         cur = q.popleft()
         off = 0
         while len(out) < cap:
-            r = c.fs_files({"cid": cur, "limit": 1150, "offset": off, "show_dir": 1})
-            if not r.get("state"):
+            items = list_dir_items(cur, 1150, off)
+            for it in items:
+                if it["is_dir"]:
+                    if recursive:
+                        q.append(it["id"])
+                else:
+                    out.append({"fid": it["id"], "name": it["name"], "cid": cur})
+            if len(items) < 1150:
                 break
-            data = r.get("data") or []
-            for x in data:
-                if x.get("sha"):
-                    out.append({"fid": str(x.get("fid") or ""), "name": x["n"], "cid": str(cur)})
-                elif recursive:
-                    q.append(str(x["cid"]))
-            if len(data) < 1150:
-                break
-            off += len(data)
+            off += len(items)
         if not recursive:
             break
+        time.sleep(0.15)
     return out
 
 
@@ -807,6 +874,7 @@ def _run_rename_job(job_id: str, cid: str, recursive: bool, dry_run: bool, cap: 
         j["preview"] = [{"old": a["name"], "new": b} for a, b in pairs[:50]]
         if dry_run:
             j["status"] = "preview"
+            save_jobs()
             return
         j["status"] = "running"
         for a, b in pairs:
@@ -815,7 +883,7 @@ def _run_rename_job(job_id: str, cid: str, recursive: bool, dry_run: bool, cap: 
                 return
             try:
                 with _rename_lock:
-                    rename_gate()
+                    wait_rename_slot()
                     time.sleep(random.uniform(0.15, 0.35))
                     r = get_client().fs_rename((a["fid"], b))
                     err = str(r.get("error") or "")
@@ -830,6 +898,8 @@ def _run_rename_job(job_id: str, cid: str, recursive: bool, dry_run: bool, cap: 
                         continue
                     _rename_times.append(time.time())
                 j["done"] += 1
+                if j["done"] % 20 == 0:
+                    save_jobs()
             except HTTPException as e:
                 if getattr(e, "status_code", 400) == 429:
                     j["status"] = "paused"
@@ -839,9 +909,15 @@ def _run_rename_job(job_id: str, cid: str, recursive: bool, dry_run: bool, cap: 
             except Exception:  # noqa: BLE001
                 j["failed"] += 1
         j["status"] = "done"
+        save_jobs()
+    except HTTPException as e:
+        j["status"] = "paused"
+        j["error"] = str(e.detail)
+        save_jobs()
     except Exception as e:  # noqa: BLE001
-        j["status"] = "error"
+        j["status"] = "paused"
         j["error"] = str(e)
+        save_jobs()
 
 
 class JobReq(BaseModel):
@@ -858,6 +934,7 @@ def start_job(cid: str, recursive: bool, dry_run: bool = False) -> dict:
             "status": "queued", "total": 0, "planned": 0, "done": 0, "failed": 0,
             "preview": [], "error": "", "created": int(time.time()),
         }
+    save_jobs()
     threading.Thread(
         target=_run_rename_job, args=(job_id, cid, recursive, dry_run), daemon=True
     ).start()
@@ -892,6 +969,79 @@ def cancel_job(job_id: str):
         raise HTTPException(404, "任务不存在")
     j["cancel"] = True
     return {"ok": True}
+
+
+# ---------- 新文件自动改名 ----------
+_auto_state = {"seen": None, "renamed": 0, "last": 0, "last_name": ""}
+
+
+def auto_seen_init():
+    try:
+        r = get_client().clouddownload_task_list({"page": 1, "page_size": 50, "stat": 11})
+        _auto_state["seen"] = {t.get("info_hash") for t in (r.get("tasks") or [])}
+    except Exception:  # noqa: BLE001
+        _auto_state["seen"] = set()
+
+
+def auto_watcher():
+    time.sleep(5)
+    if _auto_state["seen"] is None:
+        auto_seen_init()
+    while True:
+        try:
+            if (read_settings().get("auto_rename") or {}).get("enabled"):
+                r = get_client().clouddownload_task_list(
+                    {"page": 1, "page_size": 30, "stat": 11}
+                )
+                for t in reversed(r.get("tasks") or []):
+                    h = t.get("info_hash")
+                    if not h or h in _auto_state["seen"]:
+                        continue
+                    _auto_state["seen"].add(h)
+                    fid = t.get("file_id")
+                    src = t.get("name") or ""
+                    if not fid or not src:
+                        continue
+                    new = ai_clean(src) or clean_name(src)
+                    new = re.sub(r'[<>|*?"\\/:]', "", new).strip()
+                    if not new or new == src:
+                        continue
+                    with _rename_lock:
+                        wait_rename_slot()
+                        time.sleep(random.uniform(0.15, 0.35))
+                        rr = get_client().fs_rename((str(fid), new))
+                        if rr.get("state"):
+                            _rename_times.append(time.time())
+                            _auto_state["renamed"] += 1
+                            _auto_state["last"] = int(time.time())
+                            _auto_state["last_name"] = new
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(120)
+
+
+class AutoReq(BaseModel):
+    enabled: bool
+
+
+@app.get("/auto_rename")
+def get_auto():
+    return {
+        "enabled": bool((read_settings().get("auto_rename") or {}).get("enabled")),
+        "renamed": _auto_state["renamed"],
+        "last": _auto_state["last"],
+        "last_name": _auto_state["last_name"],
+    }
+
+
+@app.put("/auto_rename")
+def set_auto(req: AutoReq):
+    s = read_settings()
+    s["auto_rename"] = {"enabled": req.enabled}
+    write_settings(s)
+    if req.enabled and _auto_state["seen"] is None:
+        auto_seen_init()
+    return {"ok": True, "enabled": req.enabled}
 
 
 # ---------- AI 文件管理 ----------
@@ -1034,19 +1184,15 @@ AI_TOOLS = [
 
 
 def _tool_list_dir(a: dict) -> dict:
-    # 注意：115 文件条目的 cid 是父目录 id，真正的文件 id 在 fid
     cid = str(a.get("cid") or "0")
-    r = get_client().fs_files({"cid": cid, "limit": 300, "offset": 0, "show_dir": 1})
-    if not r.get("state"):
-        return {"error": str(r)}
-    items = r.get("data") or []
-    dirs = [{"id": str(x["cid"]), "name": x["n"]} for x in items if not x.get("sha")][:80]
+    items = list_dir_items(cid, 300, 0)
+    dirs = [{"id": it["id"], "name": it["name"]} for it in items if it["is_dir"]][:80]
     files = [
-        {"id": str(x.get("fid") or x["cid"]), "name": x["n"], "size": x.get("s") or x.get("size")}
-        for x in items
-        if x.get("sha")
+        {"id": it["id"], "name": it["name"], "size": it["size"]}
+        for it in items
+        if not it["is_dir"]
     ][:80]
-    return {"cid": cid, "total": r.get("count"), "dirs": dirs, "files": files}
+    return {"cid": cid, "total": len(items), "dirs": dirs, "files": files}
 
 
 def _tool_search(a: dict) -> dict:
@@ -1426,6 +1572,13 @@ h2{font-size:13px;color:var(--sub);font-weight:500;margin:0 0 6px;padding-left:4
   <div class="card" id="space"><div class="skel">加载中…</div></div>
   <h2>网站登录</h2>
   <div class="card" id="web"><div class="skel">加载中…</div></div>
+  <h2>自动改名</h2>
+  <div class="card" id="autoCard">
+    <div class="kv"><span>新任务完成后自动清理文件名</span><span id="autoState">—</span></div>
+    <div class="kv"><span>已自动改名</span><span id="autoCount">0 个</span></div>
+    <div class="row"><button id="autoToggle">开启</button></div>
+    <div id="autoMsg" class="skel"></div>
+  </div>
   <h2>AI 配置</h2>
   <div class="card" id="ai">
     <div class="kv col"><span class="top">接口地址（OpenAI 兼容）</span>
@@ -1549,7 +1702,29 @@ document.getElementById("aiModelsBtn").onclick = async () => {
   }catch(e){ box.innerHTML = '<span class="chip">检测失败</span>'; }
 };
 
-load().then(loadAI).catch(e=>{document.getElementById("who").innerHTML='<div class="skel">读取失败：'+e.message+'</div>';});
+async function loadAuto(){
+  try{
+    const a = await fetch("/auto_rename").then(r=>r.json());
+    document.getElementById("autoState").textContent = a.enabled ? "已开启" : "已关闭";
+    document.getElementById("autoCount").textContent = (a.renamed || 0) + " 个";
+    document.getElementById("autoToggle").textContent = a.enabled ? "关闭" : "开启";
+    document.getElementById("autoToggle").dataset.on = a.enabled ? "1" : "0";
+    document.getElementById("autoMsg").textContent = a.last
+      ? ("上次：" + day(a.last) + " · " + (a.last_name || ""))
+      : "";
+  }catch(e){}
+}
+
+document.getElementById("autoToggle").onclick = async () => {
+  const btn = document.getElementById("autoToggle");
+  const next = btn.dataset.on !== "1";
+  try{
+    const r = await fetch("/auto_rename", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({enabled: next})});
+    if(r.ok){ await loadAuto(); document.getElementById("autoMsg").textContent = next ? "已开启：新完成的任务会自动改名" : "已关闭"; }
+  }catch(e){}
+};
+
+load().then(loadAI).then(loadAuto).catch(e=>{document.getElementById("who").innerHTML='<div class="skel">读取失败：'+e.message+'</div>';});
 </script></body></html>"""
 
 
@@ -1620,3 +1795,42 @@ def _warm_folders():
 
 
 threading.Thread(target=_warm_folders, daemon=True).start()
+threading.Thread(target=auto_watcher, daemon=True).start()
+
+
+def job_retry_loop():
+    """被 115 限流的任务，每 15 分钟试一次，能读了就自动续跑"""
+    while True:
+        time.sleep(900)
+        try:
+            paused = [
+                j
+                for j in _jobs.values()
+                if j.get("status") == "paused" and "405" in (j.get("error") or "")
+            ]
+            if not paused:
+                continue
+            list_dir_items("0", 5, 0)
+        except Exception:  # noqa: BLE001
+            continue
+        for j in paused:
+            j["status"] = "queued"
+            j["error"] = ""
+            save_jobs()
+            threading.Thread(
+                target=_run_rename_job,
+                args=(j["id"], j["cid"], j["recursive"], False),
+                daemon=True,
+            ).start()
+
+
+threading.Thread(target=job_retry_loop, daemon=True).start()
+load_jobs()
+for _jid, _j in list(_jobs.items()):
+    if _j.get("status") in ("queued", "running"):
+        _j["status"] = "queued"
+        threading.Thread(
+            target=_run_rename_job,
+            args=(_jid, _j["cid"], _j["recursive"], False),
+            daemon=True,
+        ).start()
