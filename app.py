@@ -512,6 +512,24 @@ def set_ai(req: AIReq):
     return {"ok": True}
 
 
+@app.get("/ai/models")
+def ai_models():
+    cfg = ai_config()
+    if not (cfg["base"] and cfg["key"]):
+        raise HTTPException(400, "还没配置接口地址或密钥")
+    req = urllib.request.Request(
+        cfg["base"] + "/models",
+        headers={"Authorization": "Bearer " + cfg["key"]},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            d = json.loads(resp.read().decode())
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"获取失败：{e}") from e
+    ids = [m.get("id") for m in (d.get("data") or []) if m.get("id")]
+    return {"models": ids, "current": cfg["model"], "count": len(ids)}
+
+
 @app.post("/ai/test")
 def test_ai():
     cfg = ai_config()
@@ -867,6 +885,10 @@ background:#fff2e0;color:#c26a00;margin-left:6px;vertical-align:2px}
 .kv.col{display:block;padding:6px 0}
 .kv.col span.top{display:block;font-size:12px;color:var(--sub);margin-bottom:2px}
 #aiMsg{font-size:12px;color:var(--sub);margin-top:8px;min-height:16px}
+.link{color:var(--blue);text-decoration:none;font-size:12px;margin-left:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{font-size:12px;padding:5px 9px;border-radius:8px;background:#f2f2f7;color:#333}
+.chip.on{background:#eaf4ff;color:var(--blue);font-weight:600}
 .bar{height:8px;background:#eee;border-radius:4px;overflow:hidden;margin:10px 0 6px}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,#0a84ff,#4fb0ff);width:0}
 .spaceTop{display:flex;justify-content:space-between;font-size:13px;color:var(--sub)}
@@ -885,8 +907,9 @@ h2{font-size:13px;color:var(--sub);font-weight:500;margin:0 0 6px;padding-left:4
   <div class="card" id="ai">
     <div class="kv col"><span class="top">接口地址（OpenAI 兼容）</span>
       <input id="aiBase" placeholder="http://127.0.0.1:7864/v1" autocapitalize="off" autocorrect="off"></div>
-    <div class="kv col"><span class="top">模型</span>
-      <input id="aiModel" placeholder="deepseek-v4.1-flash" autocapitalize="off" autocorrect="off"></div>
+    <div class="kv col"><span class="top">模型 <u id="aiModelsBtn" class="link">检测可用模型</u></span>
+      <input id="aiModel" placeholder="deepseek-v4.1-flash" autocapitalize="off" autocorrect="off">
+      <div id="aiModels" class="chips"></div></div>
     <div class="kv col"><span class="top">密钥</span>
       <input id="aiKey" type="password" placeholder="未配置"></div>
     <div class="row"><button id="aiTest" class="ghost">测试</button><button id="aiSave">保存</button></div>
@@ -979,6 +1002,28 @@ document.getElementById("aiTest").onclick = async () => {
     const d = await r.json();
     msg.textContent = r.ok ? ("连接正常，用时 " + (d.ms || "?") + " ms") : ("失败：" + (d.detail || r.status));
   }catch(e){ msg.textContent = "失败：" + e.message; }
+};
+
+document.getElementById("aiModelsBtn").onclick = async () => {
+  const box = document.getElementById("aiModels");
+  box.innerHTML = '<span class="chip">检测中…</span>';
+  try{
+    const r = await fetch("/ai/models");
+    const d = await r.json();
+    if(!r.ok){ box.innerHTML = '<span class="chip">' + (d.detail || r.status) + '</span>'; return; }
+    const cur = document.getElementById("aiModel").value.trim();
+    box.innerHTML = d.models.map(m =>
+      '<span class="chip' + (m === cur ? ' on' : '') + '" data-m="' + m + '">' + m + '</span>'
+    ).join("") || '<span class="chip">没有可用模型</span>';
+    box.querySelectorAll(".chip[data-m]").forEach(c => {
+      c.onclick = () => {
+        document.getElementById("aiModel").value = c.dataset.m;
+        box.querySelectorAll(".chip").forEach(x => x.classList.remove("on"));
+        c.classList.add("on");
+        document.getElementById("aiMsg").textContent = "已选择 " + c.dataset.m + "，点保存生效";
+      };
+    });
+  }catch(e){ box.innerHTML = '<span class="chip">检测失败</span>'; }
 };
 
 load().then(loadAI).catch(e=>{document.getElementById("who").innerHTML='<div class="skel">读取失败：'+e.message+'</div>';});
