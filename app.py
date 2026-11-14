@@ -968,6 +968,9 @@ def cancel_job(job_id: str):
     if not j:
         raise HTTPException(404, "任务不存在")
     j["cancel"] = True
+    if j.get("status") in ("paused", "queued"):
+        j["status"] = "cancelled"
+    save_jobs()
     return {"ok": True}
 
 
