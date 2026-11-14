@@ -47,8 +47,11 @@ button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
 .tabs u.on{font-weight:600}
 .toggle{cursor:pointer;user-select:none}
 .toggle i{font-style:normal;color:var(--sub);font-size:12px;margin-left:2px}
-.hist{padding:13px 16px;border-bottom:1px solid var(--line)}
+.hist{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
 .hist:last-child{border-bottom:none}
+.hmain{flex:1;min-width:0}
+.hbtn{width:auto;flex:none;padding:7px 12px;font-size:13px;font-weight:500;
+ border-radius:9px;background:#eaf4ff;color:var(--blue)}
 .hname{font-size:15px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;
  -webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
 .hmeta{font-size:12px;color:var(--sub);margin-top:5px;display:flex;justify-content:space-between}
@@ -377,10 +380,16 @@ async function loadHistory(reset){
     const r = await api(`/tasks?page=${histPage}&stat=${histStat}`);
     const list = r.tasks || [];
     histCount = r.count || 0;
-    const html = list.map(t=>`<div class="hist" data-fid="${esc(t.file_id || "")}" data-name="${esc(t.name || "")}">
-        <div class="hname">${esc(t.name || t.info_hash)}</div>
-        <div class="hmeta"><span>${fmtDate(t.add_time)}</span><span>${fmtSize(t.size)}</span></div>
-      </div>`).join("");
+    const html = list.map(t=>{
+      const fid = esc(t.file_id || "");
+      return `<div class="hist" data-fid="${fid}" data-name="${esc(t.name || "")}">
+        <div class="hmain">
+          <div class="hname">${esc(t.name || t.info_hash)}</div>
+          <div class="hmeta"><span>${fmtDate(t.add_time)}</span><span>${fmtSize(t.size)}</span></div>
+        </div>
+        ${fid ? '<button class="hbtn">改名</button>' : ''}
+      </div>`;
+    }).join("");
     if(reset) $("#history").innerHTML = html || '<div class="empty">暂无记录</div>';
     else $("#history").insertAdjacentHTML("beforeend", html);
     bindHist();
@@ -397,8 +406,12 @@ let rFid = null, rOrig = "";
 
 function bindHist(){
   document.querySelectorAll("#history .hist").forEach(el=>{
-    if(!el.dataset.fid) return;
-    el.onclick = () => openRename(el.dataset.fid, el.dataset.name);
+    const fid = el.dataset.fid;
+    if(!fid) return;
+    const open = () => openRename(fid, el.dataset.name);
+    el.onclick = open;
+    const b = el.querySelector(".hbtn");
+    if(b) b.onclick = (ev) => { ev.stopPropagation(); open(); };
   });
 }
 
