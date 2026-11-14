@@ -215,6 +215,7 @@ API_PREFIX = (
     "/cookie",
     "/rename",
     "/ai",
+    "/chat",
     "/login/start",
     "/login/status",
 )
@@ -755,6 +756,323 @@ def rename_apply(req: RenameApplyReq):
         _rename_times.append(time.time())
         per_min = sum(1 for t in _rename_times if time.time() - t < 60)
     return {"ok": True, "name": name, "remaining": max(0, RENAME_MAX_PER_MIN - per_min)}
+
+
+# ---------- AI 文件管理 ----------
+CHAT_SYS = (
+    "你是 115 网盘的文件管理助手。你可以通过工具查看目录、搜索、改名、新建文件夹、添加下载任务。"
+    "规则：先查清楚再操作；不确定目录 id 就先从根目录开始列；改名时保留扩展名；"
+    "不提供删除功能；不要编造文件或 id；操作完成后用简短中文说明做了什么。"
+    "改名类请求先用 clean_name 生成建议，再决定是否调用 rename_file。"
+)
+
+AI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": "列出某个目录下的文件夹和文件（默认根目录）",
+            "parameters": {
+                "type": "object",
+                "properties": {"cid": {"type": "string", "description": "目录 id，根目录为 0"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "按文件名关键词搜索全盘文件",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clean_name",
+            "description": "为单个文件名生成规范化的新名字（不实际改名）",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_file",
+            "description": "重命名一个文件或文件夹（需要 file_id）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_id": {"type": "string"},
+                    "new_name": {"type": "string", "description": "完整文件名，含扩展名"},
+                },
+                "required": ["file_id", "new_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mkdir",
+            "description": "在指定目录下新建文件夹",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cid": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_download",
+            "description": "把链接（磁力/HTTP/FTP/电驴）加入云下载",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "cid": {"type": "string", "description": "保存目录 id，默认 0"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tasks",
+            "description": "查看云下载任务列表",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stat": {"type": "integer", "description": "0 全部 9 失败 11 完成 12 进行中"}
+                },
+            },
+        },
+    },
+]
+
+
+def _tool_list_dir(a: dict) -> dict:
+    # 注意：115 文件条目的 cid 是父目录 id，真正的文件 id 在 fid
+    cid = str(a.get("cid") or "0")
+    r = get_client().fs_files({"cid": cid, "limit": 300, "offset": 0, "show_dir": 1})
+    if not r.get("state"):
+        return {"error": str(r)}
+    items = r.get("data") or []
+    dirs = [{"id": str(x["cid"]), "name": x["n"]} for x in items if not x.get("sha")][:80]
+    files = [
+        {"id": str(x.get("fid") or x["cid"]), "name": x["n"], "size": x.get("s") or x.get("size")}
+        for x in items
+        if x.get("sha")
+    ][:80]
+    return {"cid": cid, "total": r.get("count"), "dirs": dirs, "files": files}
+
+
+def _tool_search(a: dict) -> dict:
+    q = str(a.get("query") or "").strip()
+    if not q:
+        return {"error": "缺少关键词"}
+    r = get_client().fs_search({"search_value": q, "limit": 40})
+    if not r.get("state"):
+        return {"error": str(r)}
+    items = r.get("data") or []
+    return {
+        "count": r.get("count"),
+        "items": [
+            {
+                "id": str(x.get("fid") or x.get("cid")),
+                "name": x.get("n"),
+                "is_dir": not x.get("sha"),
+                "parent": str(x.get("pid") or ""),
+            }
+            for x in items[:40]
+        ],
+    }
+
+
+def _tool_rename(a: dict) -> dict:
+    global _rename_block_until
+    fid = str(a.get("file_id") or "").strip()
+    name = str(a.get("new_name") or "").strip()
+    if not fid or not name:
+        return {"error": "参数不完整"}
+    with _rename_lock:
+        rename_gate()
+        time.sleep(random.uniform(0.15, 0.4))
+        r = get_client().fs_rename((fid, name))
+        err = str(r.get("error") or "")
+        if not r.get("state"):
+            if any(k in err for k in ("频繁", "过快", "稍后", "风控", "限制")):
+                _rename_block_until = time.time() + 120
+                return {"error": "115 提示操作频繁，改名暂停 2 分钟"}
+            return {"error": err or str(r)}
+        _rename_times.append(time.time())
+    return {"ok": True, "file_id": fid, "name": name}
+
+
+def _tool_mkdir(a: dict) -> dict:
+    name = str(a.get("name") or "").strip()
+    if not name:
+        return {"error": "缺少名称"}
+    r = get_client().fs_mkdir({"cname": name, "pid": str(a.get("cid") or "0")})
+    if not r.get("state"):
+        return {"error": str(r.get("error") or r)}
+    _folder_cache.pop(str(a.get("cid") or "0"), None)
+    return {"ok": True, "cid": str(r.get("cid") or ""), "name": name}
+
+
+def _tool_download(a: dict) -> dict:
+    url = str(a.get("url") or "").strip()
+    if not url:
+        return {"error": "缺少链接"}
+    r = get_client().clouddownload_task_add_url(
+        {"url": url, "wp_path_id": str(a.get("cid") or "0")}
+    )
+    return {"ok": bool(r.get("state")), "raw": r.get("data") or r.get("error")}
+
+
+def _tool_tasks(a: dict) -> dict:
+    stat = int(a.get("stat") or 0)
+    r = get_client().clouddownload_task_list({"page": 1, "page_size": 15, "stat": stat})
+    if not r.get("state"):
+        return {"error": str(r)}
+    return {
+        "count": r.get("count"),
+        "tasks": [
+            {
+                "name": t.get("name"),
+                "percent": t.get("percentDone"),
+                "status": t.get("status"),
+                "id": t.get("info_hash"),
+            }
+            for t in (r.get("tasks") or [])[:15]
+        ],
+    }
+
+
+def run_tool(name: str, args: dict) -> dict:
+    try:
+        if name == "list_dir":
+            return _tool_list_dir(args)
+        if name == "search_files":
+            return _tool_search(args)
+        if name == "clean_name":
+            src = str(args.get("name") or "")
+            ai_name = ai_clean(src)
+            return {"suggested": ai_name or clean_name(src), "ai": bool(ai_name)}
+        if name == "rename_file":
+            return _tool_rename(args)
+        if name == "mkdir":
+            return _tool_mkdir(args)
+        if name == "add_download":
+            return _tool_download(args)
+        if name == "list_tasks":
+            return _tool_tasks(args)
+        return {"error": f"未知工具 {name}"}
+    except HTTPException as e:
+        return {"error": e.detail}
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+def _summ(result: dict) -> str:
+    if "error" in result:
+        return "错误：" + str(result["error"])[:120]
+    if "dirs" in result or "files" in result:
+        return f"目录 {len(result.get('dirs', []))} 个，文件 {len(result.get('files', []))} 个"
+    if "items" in result:
+        return f"命中 {result.get('count', len(result['items']))} 条"
+    if result.get("ok"):
+        return "成功"
+    return "完成"
+
+
+class ChatReq(BaseModel):
+    messages: list[dict] = []
+    text: str = ""
+
+
+@app.post("/chat")
+def chat(req: ChatReq):
+    cfg = ai_config()
+    if not (cfg["base"] and cfg["key"]):
+        raise HTTPException(400, "还没配置 AI 接口")
+    msgs: list[dict] = [{"role": "system", "content": CHAT_SYS}]
+    for m in (req.messages or [])[-10:]:
+        role = m.get("role")
+        content = str(m.get("content") or "")[:2000]
+        if role in ("user", "assistant") and content:
+            msgs.append({"role": role, "content": content})
+    text = (req.text or "").strip()
+    if text:
+        msgs.append({"role": "user", "content": text[:2000]})
+    if len(msgs) < 2:
+        raise HTTPException(400, "没有内容")
+
+    steps: list[dict] = []
+    for _ in range(5):
+        payload = {
+            "model": cfg["model"],
+            "messages": msgs,
+            "tools": AI_TOOLS,
+            "tool_choice": "auto",
+            "temperature": 0.2,
+        }
+        req_ai = urllib.request.Request(
+            cfg["base"] + "/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + cfg["key"],
+            },
+        )
+        try:
+            with urllib.request.urlopen(req_ai, timeout=90) as resp:
+                data = json.loads(resp.read().decode())
+            msg = (data.get("choices") or [{}])[0].get("message") or {}
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"模型请求失败：{e}") from e
+
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            reply = (msg.get("content") or "").strip()
+            return {"reply": reply or "（模型没有返回内容）", "steps": steps}
+
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": msg.get("content") or "",
+                "tool_calls": calls,
+            }
+        )
+        for call in calls[:4]:
+            fn = (call.get("function") or {}).get("name") or ""
+            try:
+                args = json.loads((call.get("function") or {}).get("arguments") or "{}")
+            except Exception:  # noqa: BLE001
+                args = {}
+            result = run_tool(fn, args)
+            steps.append({"tool": fn, "args": args, "summary": _summ(result)})
+            msgs.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.get("id"),
+                    "content": json.dumps(result, ensure_ascii=False)[:4000],
+                }
+            )
+
+    return {"reply": "（工具调用轮次过多，先停在这里，可以让我继续）", "steps": steps}
 
 
 # ---------- 任务 ----------

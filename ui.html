@@ -58,6 +58,27 @@ button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
 .empty{padding:18px 16px;color:var(--sub);font-size:14px}
 .foot{text-align:center;font-size:13px;color:var(--sub);padding:6px 0 12px}
 .foot a{color:var(--blue);text-decoration:none}
+#fab{position:fixed;right:16px;bottom:calc(22px + env(safe-area-inset-bottom));
+ width:52px;height:52px;padding:0;border-radius:26px;background:var(--blue);color:#fff;
+ font:600 15px inherit;box-shadow:0 6px 20px rgba(10,132,255,.38);z-index:25}
+#chat{position:fixed;inset:0;background:var(--bg);z-index:50;display:flex;flex-direction:column;
+ transform:translateY(100%);transition:.25s;padding-top:env(safe-area-inset-top)}
+#chat.show{transform:translateY(0)}
+.chatHead{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;
+ border-bottom:1px solid var(--line);background:#fff}
+.chatHead span{color:var(--blue);font-size:15px}
+#chatBody{flex:1;overflow:auto;padding:14px}
+.msg{max-width:82%;padding:10px 13px;border-radius:14px;margin-bottom:10px;font-size:15px;
+ line-height:1.45;word-break:break-word;white-space:pre-wrap}
+.msg.user{margin-left:auto;background:var(--blue);color:#fff;border-bottom-right-radius:4px}
+.msg.bot{background:#fff;border-bottom-left-radius:4px}
+.step{font-size:12px;color:var(--sub);margin:-2px 0 10px;padding-left:4px}
+.chatInput{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+ background:#fff;border-top:1px solid var(--line)}
+.chatInput input{flex:1;border:1px solid var(--line);border-radius:12px;padding:11px 13px;
+ font:16px inherit;outline:none;background:#fafafa}
+.chatInput input:focus{border-color:var(--blue);background:#fff}
+.chatInput button{width:auto;margin:0;padding:0 16px;border-radius:12px;font-size:15px}
 #toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%) translateY(20px);
  background:rgba(0,0,0,.84);color:#fff;padding:12px 20px;border-radius:12px;font-size:14px;
  opacity:0;transition:.25s;pointer-events:none;max-width:86%;text-align:center;z-index:30}
@@ -195,6 +216,15 @@ button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
     <button id="rok">应用</button>
   </div>
   <button class="ghost" id="rcancel" style="margin-top:10px">取消</button>
+</div>
+<button id="fab">AI</button>
+<div id="chat">
+  <div class="chatHead"><b>AI 文件助手</b><span id="chatClose">关闭</span></div>
+  <div id="chatBody"></div>
+  <div class="chatInput">
+    <input id="chatText" placeholder="例如：把老师目录的广告前缀去掉">
+    <button id="chatSend">发送</button>
+  </div>
 </div>
 <div id="toast"></div>
 
@@ -478,6 +508,50 @@ async function applyRename(){
   }
 }
 
+/* ---------- AI 对话 ---------- */
+let chatHist = [], chatBusy = false;
+
+function addMsg(role, text){
+  const d = document.createElement("div");
+  d.className = "msg " + role;
+  d.textContent = text;
+  const body = $("#chatBody");
+  body.appendChild(d);
+  body.scrollTop = body.scrollHeight;
+  return d;
+}
+function addStep(text){
+  const d = document.createElement("div");
+  d.className = "step";
+  d.textContent = text;
+  const body = $("#chatBody");
+  body.appendChild(d);
+  body.scrollTop = body.scrollHeight;
+}
+
+async function sendChat(){
+  const t = $("#chatText").value.trim();
+  if(!t || chatBusy) return;
+  $("#chatText").value = "";
+  addMsg("user", t);
+  const history = chatHist.slice();
+  chatHist.push({role:"user", content:t});
+  chatBusy = true; $("#chatSend").disabled = true;
+  const tip = addMsg("bot", "思考中…");
+  try{
+    const r = await api("/chat", "POST", {messages: history, text: t});
+    tip.remove();
+    (r.steps || []).forEach(s => addStep(`🔧 ${s.tool} → ${s.summary}`));
+    addMsg("bot", r.reply);
+    chatHist.push({role:"assistant", content:r.reply});
+  }catch(e){
+    tip.remove();
+    addMsg("bot", "出错了：" + e.message);
+  }finally{
+    chatBusy = false; $("#chatSend").disabled = false;
+  }
+}
+
 (async function(){
   const h = location.hash || "";
   if(h.startsWith("#url=")){
@@ -500,6 +574,15 @@ async function applyRename(){
   $("#rcancel").onclick = closeRename;
   $("#rregen").onclick = () => { if(rOrig) suggestRename(rOrig); };
   $("#rok").onclick = applyRename;
+  $("#fab").onclick = () => {
+    $("#chat").classList.add("show");
+    if(!chatHist.length){
+      addMsg("bot", "你好，我可以帮你查目录、搜索文件、改文件名、新建文件夹、添加下载。\n试试：「看看老师文件夹里有什么」");
+    }
+  };
+  $("#chatClose").onclick = () => $("#chat").classList.remove("show");
+  $("#chatSend").onclick = sendChat;
+  $("#chatText").addEventListener("keydown", e => { if(e.key === "Enter") sendChat(); });
   $("#useHere").onclick = () => {
     const top = pickerStack[pickerStack.length-1];
     stack = pickerStack.slice();
