@@ -95,6 +95,15 @@ def write_settings(data: dict):
     tmp.replace(SETTINGS_FILE)
 
 
+def ai_config() -> dict:
+    s = read_settings().get("ai") or {}
+    return {
+        "base": (s.get("base") or AI_BASE).rstrip("/"),
+        "key": s.get("key") or AI_KEY,
+        "model": s.get("model") or AI_MODEL,
+    }
+
+
 def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac(
@@ -205,6 +214,7 @@ API_PREFIX = (
     "/default",
     "/cookie",
     "/rename",
+    "/ai",
     "/login/start",
     "/login/status",
 )
@@ -466,6 +476,72 @@ def get_config():
     return {"github": os.environ.get("GITHUB_URL", "")}
 
 
+class AIReq(BaseModel):
+    base: str = ""
+    key: str = ""
+    model: str = ""
+
+
+@app.get("/ai")
+def get_ai():
+    cfg = ai_config()
+    key = cfg["key"]
+    return {
+        "base": cfg["base"],
+        "model": cfg["model"],
+        "has_key": bool(key),
+        "key_hint": ("****" + key[-4:]) if key else "",
+    }
+
+
+@app.put("/ai")
+def set_ai(req: AIReq):
+    s = read_settings()
+    cur = s.get("ai") or {}
+    base = req.base.strip().rstrip("/")
+    if not base:
+        s.pop("ai", None)
+        write_settings(s)
+        return {"ok": True, "cleared": True}
+    s["ai"] = {
+        "base": base,
+        "model": req.model.strip() or AI_MODEL,
+        "key": req.key.strip() or cur.get("key") or AI_KEY,
+    }
+    write_settings(s)
+    return {"ok": True}
+
+
+@app.post("/ai/test")
+def test_ai():
+    cfg = ai_config()
+    if not (cfg["base"] and cfg["key"]):
+        raise HTTPException(400, "还没配置接口地址或密钥")
+    payload = {
+        "model": cfg["model"],
+        "messages": [{"role": "user", "content": "只回复两个字：正常"}],
+        "max_tokens": 16,
+    }
+    req = urllib.request.Request(
+        cfg["base"] + "/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + cfg["key"],
+        },
+    )
+    try:
+        t0 = time.time()
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            d = json.loads(resp.read().decode())
+        ms = int((time.time() - t0) * 1000)
+        if not d.get("choices"):
+            raise ValueError("响应里没有 choices")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"连接失败：{e}") from e
+    return {"ok": True, "ms": ms, "model": cfg["model"]}
+
+
 # ---------- 保存位置 ----------
 class DefaultReq(BaseModel):
     cid: str = "0"
@@ -570,10 +646,11 @@ def clean_name(name: str) -> str:
 
 
 def ai_clean(name: str) -> str | None:
-    if not (AI_BASE and AI_KEY):
+    cfg = ai_config()
+    if not (cfg["base"] and cfg["key"]):
         return None
     payload = {
-        "model": AI_MODEL,
+        "model": cfg["model"],
         "temperature": 0.2,
         "messages": [
             {
@@ -590,11 +667,11 @@ def ai_clean(name: str) -> str | None:
         ],
     }
     req = urllib.request.Request(
-        AI_BASE + "/chat/completions",
+        cfg["base"] + "/chat/completions",
         data=json.dumps(payload).encode(),
         headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer " + AI_KEY,
+            "Authorization": "Bearer " + cfg["key"],
         },
     )
     try:
@@ -780,6 +857,16 @@ background:#fff2e0;color:#c26a00;margin-left:6px;vertical-align:2px}
 .kv span:first-child{color:var(--sub);flex:none}
 .kv span:last-child{text-align:right;word-break:break-all}
 .ua{font-size:12px;color:var(--sub);max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;
+ font:14px inherit;outline:none;background:#fafafa;margin-top:4px}
+.card input:focus{border-color:var(--blue);background:#fff}
+.card .row{display:flex;gap:10px;margin-top:12px}
+.card .row button{flex:1;padding:11px;border:none;border-radius:10px;background:var(--blue);
+ color:#fff;font:15px inherit;font-weight:600}
+.card .row button.ghost{background:#f2f2f7;color:var(--blue)}
+.kv.col{display:block;padding:6px 0}
+.kv.col span.top{display:block;font-size:12px;color:var(--sub);margin-bottom:2px}
+#aiMsg{font-size:12px;color:var(--sub);margin-top:8px;min-height:16px}
 .bar{height:8px;background:#eee;border-radius:4px;overflow:hidden;margin:10px 0 6px}
 .bar i{display:block;height:100%;background:linear-gradient(90deg,#0a84ff,#4fb0ff);width:0}
 .spaceTop{display:flex;justify-content:space-between;font-size:13px;color:var(--sub)}
@@ -794,6 +881,17 @@ h2{font-size:13px;color:var(--sub);font-weight:500;margin:0 0 6px;padding-left:4
   <div class="card" id="space"><div class="skel">加载中…</div></div>
   <h2>网站登录</h2>
   <div class="card" id="web"><div class="skel">加载中…</div></div>
+  <h2>AI 配置</h2>
+  <div class="card" id="ai">
+    <div class="kv col"><span class="top">接口地址（OpenAI 兼容）</span>
+      <input id="aiBase" placeholder="http://127.0.0.1:7864/v1" autocapitalize="off" autocorrect="off"></div>
+    <div class="kv col"><span class="top">模型</span>
+      <input id="aiModel" placeholder="deepseek-v4.1-flash" autocapitalize="off" autocorrect="off"></div>
+    <div class="kv col"><span class="top">密钥</span>
+      <input id="aiKey" type="password" placeholder="未配置"></div>
+    <div class="row"><button id="aiTest" class="ghost">测试</button><button id="aiSave">保存</button></div>
+    <div id="aiMsg"></div>
+  </div>
   <h2>服务</h2>
   <div class="card" id="meta"><div class="skel">加载中…</div></div>
 </div>
@@ -845,7 +943,45 @@ async function load(){
     <div class="kv"><span>115 登录态更新</span><span>${day(sv.cookie_mtime)}</span></div>
     <div class="kv"><span>服务已运行</span><span>${dur(sv.uptime)}</span></div>`;
 }
-load().catch(e=>{document.getElementById("who").innerHTML='<div class="skel">读取失败：'+e.message+'</div>';});
+
+async function loadAI(){
+  try{
+    const a = await fetch("/ai").then(r=>r.json());
+    document.getElementById("aiBase").value = a.base || "";
+    document.getElementById("aiModel").value = a.model || "";
+    const k = document.getElementById("aiKey");
+    k.value = "";
+    k.placeholder = a.has_key ? ("已配置 " + a.key_hint + "，留空不修改") : "未配置";
+  }catch(e){}
+}
+
+document.getElementById("aiSave").onclick = async () => {
+  const msg = document.getElementById("aiMsg");
+  msg.textContent = "保存中…";
+  const body = {
+    base: document.getElementById("aiBase").value.trim(),
+    model: document.getElementById("aiModel").value.trim(),
+    key: document.getElementById("aiKey").value.trim()
+  };
+  try{
+    const r = await fetch("/ai", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    const d = await r.json();
+    msg.textContent = r.ok ? "已保存，立即生效" : ("保存失败：" + (d.detail || r.status));
+    if(r.ok) loadAI();
+  }catch(e){ msg.textContent = "保存失败：" + e.message; }
+};
+
+document.getElementById("aiTest").onclick = async () => {
+  const msg = document.getElementById("aiMsg");
+  msg.textContent = "测试中…";
+  try{
+    const r = await fetch("/ai/test", {method:"POST"});
+    const d = await r.json();
+    msg.textContent = r.ok ? ("连接正常，用时 " + (d.ms || "?") + " ms") : ("失败：" + (d.detail || r.status));
+  }catch(e){ msg.textContent = "失败：" + e.message; }
+};
+
+load().then(loadAI).catch(e=>{document.getElementById("who").innerHTML='<div class="skel">读取失败：'+e.message+'</div>';});
 </script></body></html>"""
 
 
