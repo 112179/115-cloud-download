@@ -118,6 +118,10 @@ def write_settings(data: dict):
     tmp.replace(SETTINGS_FILE)
 
 
+def ai_enabled() -> bool:
+    return bool(read_settings().get("ai_enabled", True))
+
+
 def ai_config() -> dict:
     s = read_settings().get("ai") or {}
     return {
@@ -538,6 +542,23 @@ def set_ai(req: AIReq):
     return {"ok": True}
 
 
+class ToggleReq(BaseModel):
+    enabled: bool
+
+
+@app.get("/ai/status")
+def ai_status():
+    return {"enabled": ai_enabled()}
+
+
+@app.put("/ai/status")
+def set_ai_status(req: ToggleReq):
+    s = read_settings()
+    s["ai_enabled"] = bool(req.enabled)
+    write_settings(s)
+    return {"ok": True, "enabled": bool(req.enabled)}
+
+
 @app.get("/ai/models")
 def ai_models():
     cfg = ai_config()
@@ -682,6 +703,8 @@ def clean_name(name: str) -> str:
 
 
 def ai_clean(name: str) -> str | None:
+    if not ai_enabled():
+        return None
     cfg = ai_config()
     if not (cfg["base"] and cfg["key"]):
         return None
@@ -1359,6 +1382,8 @@ class ChatReq(BaseModel):
 
 @app.post("/chat")
 def chat(req: ChatReq):
+    if not ai_enabled():
+        raise HTTPException(403, "AI 功能已在后台关闭")
     cfg = ai_config()
     if not (cfg["base"] and cfg["key"]):
         raise HTTPException(400, "还没配置 AI 接口")
@@ -1582,6 +1607,12 @@ h2{font-size:13px;color:var(--sub);font-weight:500;margin:0 0 6px;padding-left:4
     <div class="row"><button id="autoToggle">开启</button></div>
     <div id="autoMsg" class="skel"></div>
   </div>
+  <h2>AI 功能</h2>
+  <div class="card" id="aiSwitch">
+    <div class="kv"><span>对话与 AI 改名</span><span id="aiOn">—</span></div>
+    <div class="row"><button id="aiToggle">关闭</button></div>
+    <div class="skel" id="aiSwitchMsg"></div>
+  </div>
   <h2>AI 配置</h2>
   <div class="card" id="ai">
     <div class="kv col"><span class="top">接口地址（OpenAI 兼容）</span>
@@ -1727,7 +1758,29 @@ document.getElementById("autoToggle").onclick = async () => {
   }catch(e){}
 };
 
-load().then(loadAI).then(loadAuto).catch(e=>{document.getElementById("who").innerHTML='<div class="skel">读取失败：'+e.message+'</div>';});
+async function loadAiSwitch(){
+  try{
+    const a = await fetch("/ai/status").then(r=>r.json());
+    document.getElementById("aiOn").textContent = a.enabled ? "已开启" : "已关闭";
+    const b = document.getElementById("aiToggle");
+    b.textContent = a.enabled ? "关闭" : "开启";
+    b.dataset.on = a.enabled ? "1" : "0";
+  }catch(e){}
+}
+
+document.getElementById("aiToggle").onclick = async () => {
+  const b = document.getElementById("aiToggle");
+  const next = b.dataset.on !== "1";
+  try{
+    const r = await fetch("/ai/status", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({enabled: next})});
+    if(r.ok){
+      await loadAiSwitch();
+      document.getElementById("aiSwitchMsg").textContent = next ? "已开启" : "已关闭：对话入口隐藏，改名退回规则清洗";
+    }
+  }catch(e){}
+};
+
+load().then(loadAI).then(loadAuto).then(loadAiSwitch).catch(e=>{document.getElementById("who").innerHTML='<div class="skel">读取失败：'+e.message+'</div>';});
 </script></body></html>"""
 
 

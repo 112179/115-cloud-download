@@ -676,6 +676,9 @@ async function sendChat(){
   loadTasks();
   api("/folders?cid=0").then(r=>folderCacheSet("0", r.folders || [])).catch(()=>{});
   if(cid !== "0") api(`/folders?cid=${encodeURIComponent(cid)}`).then(r=>folderCacheSet(cid, r.folders || [])).catch(()=>{});
+  api("/ai/status").then(st=>{
+    if(!st.enabled){ const f = $("#fab"); if(f) f.style.display = "none"; }
+  }).catch(()=>{});
   api("/config").then(c=>{
     if(c.github){ $("#gh").href = c.github; $("#ghWrap").style.display = "inline"; }
   }).catch(()=>{});
