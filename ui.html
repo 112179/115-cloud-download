@@ -218,7 +218,14 @@ async function api(path, method="GET", body){
   let data = {};
   try{ data = await r.json(); }catch(e){}
   if(r.status === 401){ location.href = "/login"; throw new Error("需要登录"); }
-  if(!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+  if(!r.ok){
+    const d = data.detail;
+    const msg = typeof d === "string" ? d : ((d && d.message) || ("HTTP " + r.status));
+    const err = new Error(msg);
+    err.status = r.status;
+    err.detail = d;
+    throw err;
+  }
   return data;
 }
 
@@ -402,6 +409,7 @@ function openRename(fid, name){
   $("#rai").style.display = "none";
   $("#rdlgMask").classList.add("show");
   $("#rdlg").classList.add("show");
+  if(!rCooldownTimer){ $("#rok").disabled = false; $("#rok").textContent = "应用"; }
   suggestRename(name);
 }
 function closeRename(){
@@ -416,19 +424,44 @@ async function suggestRename(name){
     $("#rai").style.display = "inline";
   }catch(e){}
 }
+let rCooldownTimer = null;
+function startCooldown(sec){
+  const btn = $("#rok");
+  let left = Math.max(1, Math.round(sec));
+  clearInterval(rCooldownTimer);
+  btn.disabled = true;
+  const tick = () => {
+    if(left <= 0){
+      clearInterval(rCooldownTimer); rCooldownTimer = null;
+      btn.disabled = false; btn.textContent = "应用";
+      return;
+    }
+    btn.textContent = `等待 ${left}s`;
+    left--;
+  };
+  tick();
+  rCooldownTimer = setInterval(tick, 1000);
+}
+
 async function applyRename(){
   const name = $("#rinput").value.trim();
   if(!name){ toast("名称不能为空"); return; }
   const btn = $("#rok"); btn.disabled = true; btn.textContent = "重命名中…";
   try{
-    await api("/rename/apply", "POST", {file_id: rFid, name});
+    const r = await api("/rename/apply", "POST", {file_id: rFid, name});
     closeRename();
-    toast("已重命名", 1800);
+    toast(r.remaining != null ? `已重命名，本分钟还可改 ${r.remaining} 次` : "已重命名", 2400);
     loadHistory(true);
-  }catch(e){
-    toast("改名失败：" + e.message, 3200);
-  }finally{
     btn.disabled = false; btn.textContent = "应用";
+  }catch(e){
+    if(e.status === 429){
+      const wait = Math.round((e.detail && e.detail.retry_after) || 10);
+      startCooldown(wait);
+      toast(`${e.message}（${wait} 秒后继续）`, 3600);
+    }else{
+      btn.disabled = false; btn.textContent = "应用";
+      toast("改名失败：" + e.message, 3200);
+    }
   }
 }
 

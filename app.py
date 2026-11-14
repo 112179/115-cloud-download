@@ -6,12 +6,14 @@ import hmac
 import io
 import json
 import os
+import random
 import re
 import secrets
 import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 import segno
@@ -33,6 +35,41 @@ TOKEN = os.environ.get("API_TOKEN", "")
 AI_BASE = os.environ.get("AI_BASE_URL", "").rstrip("/")
 AI_KEY = os.environ.get("AI_API_KEY", "")
 AI_MODEL = os.environ.get("AI_MODEL", "deepseek-v4.1-flash")
+
+# 改名限流（防 115 风控）
+RENAME_MIN_INTERVAL = float(os.environ.get("RENAME_MIN_INTERVAL", "2.5"))
+RENAME_MAX_PER_MIN = int(os.environ.get("RENAME_MAX_PER_MIN", "20"))
+RENAME_MAX_PER_HOUR = int(os.environ.get("RENAME_MAX_PER_HOUR", "180"))
+
+_rename_lock = threading.Lock()
+_rename_times: deque[float] = deque()
+_rename_block_until = 0.0
+
+
+def rename_gate():
+    now = time.time()
+    if _rename_block_until > now:
+        left = _rename_block_until - now
+        raise HTTPException(
+            429, {"message": "115 触发风控，改名暂时停用", "retry_after": round(left, 1)}
+        )
+    while _rename_times and now - _rename_times[0] > 3600:
+        _rename_times.popleft()
+    if _rename_times:
+        wait = RENAME_MIN_INTERVAL - (now - _rename_times[-1])
+        if wait > 0:
+            raise HTTPException(
+                429, {"message": "操作太快了，缓一下", "retry_after": round(wait, 1)}
+            )
+    per_min = sum(1 for t in _rename_times if now - t < 60)
+    if per_min >= RENAME_MAX_PER_MIN:
+        raise HTTPException(
+            429, {"message": "每分钟改名次数已达上限", "retry_after": 60}
+        )
+    if len(_rename_times) >= RENAME_MAX_PER_HOUR:
+        raise HTTPException(
+            429, {"message": "每小时改名次数已达上限", "retry_after": 600}
+        )
 SESSION_TTL = 10 * 365 * 86400  # 登录保持 10 年（等同永久）
 START_TS = time.time()
 
@@ -601,11 +638,27 @@ def rename_apply(req: RenameApplyReq):
         raise HTTPException(400, "参数不完整")
     if len(name) > 255:
         raise HTTPException(400, "名称太长")
+    global _rename_block_until
     c = get_client()
-    r = c.fs_rename((fid, name))
-    if not r.get("state"):
-        raise HTTPException(400, str(r.get("error") or r))
-    return {"ok": True, "name": name}
+    with _rename_lock:
+        rename_gate()
+        time.sleep(random.uniform(0.15, 0.45))  # 轻微抖动，避免机械节奏
+        try:
+            r = c.fs_rename((fid, name))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, str(e)) from e
+        err = str(r.get("error") or "")
+        if not r.get("state"):
+            if any(k in err for k in ("频繁", "过快", "稍后", "风控", "限制")):
+                _rename_block_until = time.time() + 120
+                raise HTTPException(
+                    429,
+                    {"message": "115 提示操作频繁，已暂停改名 2 分钟", "retry_after": 120},
+                )
+            raise HTTPException(400, err or str(r))
+        _rename_times.append(time.time())
+        per_min = sum(1 for t in _rename_times if time.time() - t < 60)
+    return {"ok": True, "name": name, "remaining": max(0, RENAME_MAX_PER_MIN - per_min)}
 
 
 # ---------- 任务 ----------
