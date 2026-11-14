@@ -758,12 +758,151 @@ def rename_apply(req: RenameApplyReq):
     return {"ok": True, "name": name, "remaining": max(0, RENAME_MAX_PER_MIN - per_min)}
 
 
+# ---------- 批量改名任务 ----------
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+
+
+def collect_files(cid: str, recursive: bool, cap: int = 3000) -> list[dict]:
+    c = get_client()
+    out: list[dict] = []
+    q = deque([cid])
+    while q and len(out) < cap:
+        cur = q.popleft()
+        off = 0
+        while len(out) < cap:
+            r = c.fs_files({"cid": cur, "limit": 1150, "offset": off, "show_dir": 1})
+            if not r.get("state"):
+                break
+            data = r.get("data") or []
+            for x in data:
+                if x.get("sha"):
+                    out.append({"fid": str(x.get("fid") or ""), "name": x["n"], "cid": str(cur)})
+                elif recursive:
+                    q.append(str(x["cid"]))
+            if len(data) < 1150:
+                break
+            off += len(data)
+        if not recursive:
+            break
+    return out
+
+
+def plan_pairs(cid: str, recursive: bool, cap: int = 3000):
+    files = collect_files(cid, recursive, cap)
+    pairs = []
+    for f in files:
+        nn = re.sub(r'[<>|*?"\\/:]', "", clean_name(f["name"])).strip()
+        if nn and f["fid"] and nn != f["name"]:
+            pairs.append((f, nn))
+    return files, pairs
+
+
+def _run_rename_job(job_id: str, cid: str, recursive: bool, dry_run: bool, cap: int = 3000):
+    j = _jobs[job_id]
+    try:
+        files, pairs = plan_pairs(cid, recursive, cap)
+        j["total"] = len(files)
+        j["planned"] = len(pairs)
+        j["preview"] = [{"old": a["name"], "new": b} for a, b in pairs[:50]]
+        if dry_run:
+            j["status"] = "preview"
+            return
+        j["status"] = "running"
+        for a, b in pairs:
+            if j.get("cancel"):
+                j["status"] = "cancelled"
+                return
+            try:
+                with _rename_lock:
+                    rename_gate()
+                    time.sleep(random.uniform(0.15, 0.35))
+                    r = get_client().fs_rename((a["fid"], b))
+                    err = str(r.get("error") or "")
+                    if not r.get("state"):
+                        if any(k in err for k in ("频繁", "过快", "稍后", "风控", "限制")):
+                            global _rename_block_until
+                            _rename_block_until = time.time() + 120
+                            j["status"] = "paused"
+                            j["error"] = "115 提示操作频繁，已暂停"
+                            return
+                        j["failed"] += 1
+                        continue
+                    _rename_times.append(time.time())
+                j["done"] += 1
+            except HTTPException as e:
+                if getattr(e, "status_code", 400) == 429:
+                    j["status"] = "paused"
+                    j["error"] = str(e.detail)
+                    return
+                j["failed"] += 1
+            except Exception:  # noqa: BLE001
+                j["failed"] += 1
+        j["status"] = "done"
+    except Exception as e:  # noqa: BLE001
+        j["status"] = "error"
+        j["error"] = str(e)
+
+
+class JobReq(BaseModel):
+    cid: str = "0"
+    recursive: bool = False
+    dry_run: bool = True
+
+
+def start_job(cid: str, recursive: bool, dry_run: bool = False) -> dict:
+    job_id = secrets.token_hex(4)
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "id": job_id, "cid": cid, "recursive": recursive, "dry_run": dry_run,
+            "status": "queued", "total": 0, "planned": 0, "done": 0, "failed": 0,
+            "preview": [], "error": "", "created": int(time.time()),
+        }
+    threading.Thread(
+        target=_run_rename_job, args=(job_id, cid, recursive, dry_run), daemon=True
+    ).start()
+    return {"job_id": job_id}
+
+
+@app.post("/jobs/rename")
+def start_rename_job(req: JobReq):
+    return {"ok": True, **start_job(req.cid, req.recursive, req.dry_run)}
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    j = _jobs.get(job_id)
+    if not j:
+        raise HTTPException(404, "任务不存在")
+    return dict(j)
+
+
+@app.post("/jobs/{job_id}/resume")
+def resume_job(job_id: str):
+    j = _jobs.get(job_id)
+    if not j:
+        raise HTTPException(404, "任务不存在")
+    return {"ok": True, **start_job(j["cid"], j["recursive"], False)}
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    j = _jobs.get(job_id)
+    if not j:
+        raise HTTPException(404, "任务不存在")
+    j["cancel"] = True
+    return {"ok": True}
+
+
 # ---------- AI 文件管理 ----------
 CHAT_SYS = (
-    "你是 115 网盘的文件管理助手。你可以通过工具查看目录、搜索、改名、新建文件夹、添加下载任务。"
-    "规则：先查清楚再操作；不确定目录 id 就先从根目录开始列；改名时保留扩展名；"
-    "不提供删除功能；不要编造文件或 id；操作完成后用简短中文说明做了什么。"
-    "改名类请求先用 clean_name 生成建议，再决定是否调用 rename_file。"
+    "你是 115 网盘的文件管理助手，通过工具查看目录、搜索、改名、新建文件夹、添加下载任务。"
+    "规则：先查清楚再操作；不确定目录 id 就从根目录开始列。"
+    "批量改名只能调用 auto_rename：confirm=false 预览，confirm=true 执行。"
+    "两者都在后台跑，不要轮询 job_status，页面会自动显示进度。"
+    "不要在回复里粘贴具体文件名（可能有敏感内容），只报告数量、目录和操作结果。"
+    "单个文件改名可以用 clean_name 生成建议后调用 rename_file。"
+    "不提供删除功能；不要编造文件或 id。"
 )
 
 AI_TOOLS = [
@@ -844,6 +983,37 @@ AI_TOOLS = [
                     "cid": {"type": "string", "description": "保存目录 id，默认 0"},
                 },
                 "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "auto_rename",
+            "description": (
+                "批量整理某个目录下的文件名，作为后台任务执行。"
+                "先 confirm=false 预览改动，用户确认后再 confirm=true 真正执行。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cid": {"type": "string", "description": "目录 id"},
+                    "recursive": {"type": "boolean", "description": "是否包含子目录，只有用户明确要求时才传 true"},
+                    "confirm": {"type": "boolean", "description": "false=只预览，true=执行"},
+                },
+                "required": ["cid"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "job_status",
+            "description": "查询后台改名任务的进度",
+            "parameters": {
+                "type": "object",
+                "properties": {"job_id": {"type": "string"}},
+                "required": ["job_id"],
             },
         },
     },
@@ -979,6 +1149,35 @@ def run_tool(name: str, args: dict) -> dict:
             return _tool_download(args)
         if name == "list_tasks":
             return _tool_tasks(args)
+        if name == "auto_rename":
+            cid = str(args.get("cid") or "0")
+            rec = bool(args.get("recursive"))
+            confirm = bool(args.get("confirm"))
+            r = start_job(cid, rec, dry_run=not confirm)
+            jid = r["job_id"]
+            if not confirm:
+                for _ in range(15):
+                    time.sleep(1)
+                    j = _jobs.get(jid) or {}
+                    if j.get("status") in ("preview", "error"):
+                        break
+                j = _jobs.get(jid) or {}
+                return {
+                    "job_id": jid,
+                    "status": j.get("status"),
+                    "total": j.get("total", 0),
+                    "planned": j.get("planned", 0),
+                    "note": "预览只返回数量，具体文件名在页面上显示",
+                }
+            return {"job_id": jid, "status": "queued", "note": "后台执行中，进度在页面显示"}
+        if name == "job_status":
+            j = _jobs.get(str(args.get("job_id") or ""))
+            if not j:
+                return {"error": "任务不存在"}
+            return {
+                k: j.get(k)
+                for k in ("status", "total", "planned", "done", "failed", "preview", "error")
+            }
         return {"error": f"未知工具 {name}"}
     except HTTPException as e:
         return {"error": e.detail}
@@ -987,12 +1186,18 @@ def run_tool(name: str, args: dict) -> dict:
 
 
 def _summ(result: dict) -> str:
-    if "error" in result:
+    if result.get("preview"):
+        return f"预览 {result.get('planned', 0)}/{result.get('total', 0)} 个可改"
+    if result.get("error"):
         return "错误：" + str(result["error"])[:120]
     if "dirs" in result or "files" in result:
         return f"目录 {len(result.get('dirs', []))} 个，文件 {len(result.get('files', []))} 个"
     if "items" in result:
         return f"命中 {result.get('count', len(result['items']))} 条"
+    if "job_id" in result:
+        return "后台任务已创建"
+    if "status" in result and "planned" in result:
+        return f"{result.get('status')} {result.get('done', 0)}/{result.get('planned', 0)}"
     if result.get("ok"):
         return "成功"
     return "完成"
@@ -1021,7 +1226,7 @@ def chat(req: ChatReq):
         raise HTTPException(400, "没有内容")
 
     steps: list[dict] = []
-    for _ in range(5):
+    for _ in range(6):
         payload = {
             "model": cfg["model"],
             "messages": msgs,
@@ -1063,7 +1268,7 @@ def chat(req: ChatReq):
             except Exception:  # noqa: BLE001
                 args = {}
             result = run_tool(fn, args)
-            steps.append({"tool": fn, "args": args, "summary": _summ(result)})
+            steps.append({"tool": fn, "args": args, "summary": _summ(result), "job_id": result.get("job_id")})
             msgs.append(
                 {
                     "role": "tool",

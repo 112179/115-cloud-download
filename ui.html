@@ -529,6 +529,31 @@ function addStep(text){
   body.scrollTop = body.scrollHeight;
 }
 
+async function watchJob(jobId){
+  const line = document.createElement("div");
+  line.className = "step";
+  $("#chatBody").appendChild(line);
+  let last = null;
+  for(let i = 0; i < 400; i++){
+    let j;
+    try{ j = await api(`/jobs/${jobId}`); }
+    catch(e){ line.textContent = "进度查询失败：" + e.message; return; }
+    last = j;
+    if(j.status === "preview"){
+      line.textContent = `📋 预览：${j.planned || 0}/${j.total || 0} 个可改，确认后回复「执行」`;
+      return;
+    }
+    line.textContent = `⏳ ${j.status} ${j.done || 0}/${j.planned || 0}` + (j.error ? ` · ${j.error}` : "");
+    if(["done","paused","error","cancelled"].includes(j.status)) break;
+    await new Promise(r => setTimeout(r, 2500));
+  }
+  if(last){
+    line.textContent = `✅ ${last.status}：成功 ${last.done || 0} 个，失败 ${last.failed || 0} 个` +
+      (last.error ? ` · ${last.error}` : "");
+    loadHistory(true);
+  }
+}
+
 async function sendChat(){
   const t = $("#chatText").value.trim();
   if(!t || chatBusy) return;
@@ -543,6 +568,7 @@ async function sendChat(){
     tip.remove();
     (r.steps || []).forEach(s => addStep(`🔧 ${s.tool} → ${s.summary}`));
     addMsg("bot", r.reply);
+    (r.steps || []).filter(s => s.job_id).forEach(s => watchJob(s.job_id));
     chatHist.push({role:"assistant", content:r.reply});
   }catch(e){
     tip.remove();
