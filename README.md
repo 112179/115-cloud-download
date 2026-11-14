@@ -82,6 +82,7 @@ systemctl restart cloudflared
 |---|---|---|
 | `API_TOKEN` | 空 | 快捷指令用的令牌，空则不校验（不建议） |
 | `DATA_DIR` | `/opt/115dl` | 数据目录（cookies、settings） |
+| `GITHUB_URL` | 空 | 填了会在页面底部显示 GitHub 链接 |
 
 ## 数据文件
 

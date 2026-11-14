@@ -418,6 +418,11 @@ def login_status():
     }
 
 
+@app.get("/config")
+def get_config():
+    return {"github": os.environ.get("GITHUB_URL", "")}
+
+
 # ---------- 保存位置 ----------
 class DefaultReq(BaseModel):
     cid: str = "0"

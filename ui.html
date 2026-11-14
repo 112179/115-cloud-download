@@ -141,7 +141,7 @@ button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
   </div>
 
   <div class="foot">
-    <a href="/password">修改密码</a> · <a href="/logout">退出登录</a> · <a href="/qr">115 登录</a> · <a href="/admin">后台</a>
+    <a href="/password">修改密码</a> · <a href="/logout">退出登录</a> · <a href="/qr">115 登录</a> · <a href="/admin">后台</a><span id="ghWrap" style="display:none"> · <a id="gh" href="#" target="_blank">GitHub</a></span>
   </div>
 </main>
 
@@ -445,6 +445,9 @@ async function loadHistory(reset){
   loadTasks();
   api("/folders?cid=0").then(r=>folderCacheSet("0", r.folders || [])).catch(()=>{});
   if(cid !== "0") api(`/folders?cid=${encodeURIComponent(cid)}`).then(r=>folderCacheSet(cid, r.folders || [])).catch(()=>{});
+  api("/config").then(c=>{
+    if(c.github){ $("#gh").href = c.github; $("#ghWrap").style.display = "inline"; }
+  }).catch(()=>{});
   applyHistOpen();
 })();
 </script>
