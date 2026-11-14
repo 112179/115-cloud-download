@@ -97,6 +97,19 @@ button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
  font:16px inherit;outline:none;background:#fafafa}
 #dlg input:focus{border-color:var(--blue);background:#fff}
 #dlg .row{margin-top:14px}
+#rdlgMask{position:fixed;inset:0;background:rgba(0,0,0,.4);opacity:0;pointer-events:none;transition:.2s;z-index:42}
+#rdlgMask.show{opacity:1;pointer-events:auto}
+#rdlg{position:fixed;left:50%;top:50%;transform:translate(-50%,-46%) scale(.96);width:86%;max-width:360px;
+ background:#fff;border-radius:16px;padding:20px;z-index:43;opacity:0;pointer-events:none;
+ transition:.2s;box-shadow:0 20px 50px rgba(0,0,0,.2)}
+#rdlg.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+#rdlg h3{margin:0 0 12px;font-size:17px}
+#rdlg .rname{font-size:13px;color:var(--sub);line-height:1.4;word-break:break-all;margin-bottom:10px}
+#rdlg input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;
+ font:15px inherit;outline:none;background:#fafafa}
+#rdlg input:focus{border-color:var(--blue);background:#fff}
+#rdlg .row{margin-top:14px}
+.aitag{font-size:11px;color:var(--blue);background:#eaf4ff;border-radius:8px;padding:1px 6px;margin-left:4px}
 </style>
 </head>
 <body>
@@ -168,6 +181,17 @@ button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
     <button class="ghost" id="dlgCancel">取消</button>
     <button id="dlgOk">创建</button>
   </div>
+</div>
+<div id="rdlgMask"></div>
+<div id="rdlg">
+  <h3>改文件名 <span id="rai" class="aitag" style="display:none"></span></h3>
+  <div class="rname" id="rorig"></div>
+  <input id="rinput" maxlength="255" placeholder="新文件名">
+  <div class="row">
+    <button class="ghost" id="rregen">换一个</button>
+    <button id="rok">应用</button>
+  </div>
+  <button class="ghost" id="rcancel" style="margin-top:10px">取消</button>
 </div>
 <div id="toast"></div>
 
@@ -346,17 +370,65 @@ async function loadHistory(reset){
     const r = await api(`/tasks?page=${histPage}&stat=${histStat}`);
     const list = r.tasks || [];
     histCount = r.count || 0;
-    const html = list.map(t=>`<div class="hist">
+    const html = list.map(t=>`<div class="hist" data-fid="${esc(t.file_id || "")}" data-name="${esc(t.name || "")}">
         <div class="hname">${esc(t.name || t.info_hash)}</div>
         <div class="hmeta"><span>${fmtDate(t.add_time)}</span><span>${fmtSize(t.size)}</span></div>
       </div>`).join("");
     if(reset) $("#history").innerHTML = html || '<div class="empty">暂无记录</div>';
     else $("#history").insertAdjacentHTML("beforeend", html);
+    bindHist();
     const more = histPage * 30 < histCount && list.length > 0;
     $("#more").style.display = more ? "block" : "none";
     $("#more").textContent = `加载更多（共 ${histCount} 条）`;
   }catch(e){
     if(reset) $("#history").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`;
+  }
+}
+
+/* ---------- 改名 ---------- */
+let rFid = null, rOrig = "";
+
+function bindHist(){
+  document.querySelectorAll("#history .hist").forEach(el=>{
+    if(!el.dataset.fid) return;
+    el.onclick = () => openRename(el.dataset.fid, el.dataset.name);
+  });
+}
+
+function openRename(fid, name){
+  rFid = fid; rOrig = name;
+  $("#rorig").textContent = name;
+  $("#rinput").value = name;
+  $("#rai").style.display = "none";
+  $("#rdlgMask").classList.add("show");
+  $("#rdlg").classList.add("show");
+  suggestRename(name);
+}
+function closeRename(){
+  $("#rdlgMask").classList.remove("show");
+  $("#rdlg").classList.remove("show");
+}
+async function suggestRename(name){
+  try{
+    const r = await api("/rename/suggest", "POST", {name});
+    $("#rinput").value = r.suggested;
+    $("#rai").textContent = r.ai ? "AI" : "规则";
+    $("#rai").style.display = "inline";
+  }catch(e){}
+}
+async function applyRename(){
+  const name = $("#rinput").value.trim();
+  if(!name){ toast("名称不能为空"); return; }
+  const btn = $("#rok"); btn.disabled = true; btn.textContent = "重命名中…";
+  try{
+    await api("/rename/apply", "POST", {file_id: rFid, name});
+    closeRename();
+    toast("已重命名", 1800);
+    loadHistory(true);
+  }catch(e){
+    toast("改名失败：" + e.message, 3200);
+  }finally{
+    btn.disabled = false; btn.textContent = "应用";
   }
 }
 
@@ -378,6 +450,10 @@ async function loadHistory(reset){
   $("#dlgCancel").onclick = closeNewFolder;
   $("#dlgOk").onclick = createFolder;
   $("#dlgInput").addEventListener("keydown", e=>{ if(e.key === "Enter") createFolder(); });
+  $("#rdlgMask").onclick = closeRename;
+  $("#rcancel").onclick = closeRename;
+  $("#rregen").onclick = () => { if(rOrig) suggestRename(rOrig); };
+  $("#rok").onclick = applyRename;
   $("#useHere").onclick = () => {
     const top = pickerStack[pickerStack.length-1];
     stack = pickerStack.slice();

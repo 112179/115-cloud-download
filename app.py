@@ -6,10 +6,12 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import threading
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import segno
@@ -28,6 +30,9 @@ BASE = Path(os.environ.get("DATA_DIR", "/opt/115dl"))
 COOKIE_FILE = BASE / "cookies.txt"
 SETTINGS_FILE = BASE / "settings.json"
 TOKEN = os.environ.get("API_TOKEN", "")
+AI_BASE = os.environ.get("AI_BASE_URL", "").rstrip("/")
+AI_KEY = os.environ.get("AI_API_KEY", "")
+AI_MODEL = os.environ.get("AI_MODEL", "deepseek-v4.1-flash")
 SESSION_TTL = 10 * 365 * 86400  # 登录保持 10 年（等同永久）
 START_TS = time.time()
 
@@ -162,6 +167,7 @@ API_PREFIX = (
     "/task/",
     "/default",
     "/cookie",
+    "/rename",
     "/login/start",
     "/login/status",
 )
@@ -497,6 +503,109 @@ def mkdir(req: MkdirReq):
         raise HTTPException(400, str(r.get("error") or r))
     _folder_cache.pop(req.cid, None)
     return {"ok": True, "cid": str(r.get("cid") or ""), "name": name}
+
+
+# ---------- 改名 ----------
+_EXT_MAX = 6
+_BRACKET_AD = re.compile(
+    r"[\[【(（][^\]】)）]{0,40}(?:www\.|\.com|\.la|\.net|发布|字幕组|高清剧集网)[^\]】)）]{0,40}[\]】)）]",
+    re.I,
+)
+
+
+def split_ext(name: str) -> tuple[str, str]:
+    stem, dot, ext = name.rpartition(".")
+    if dot and 0 < len(ext) <= _EXT_MAX and " " not in ext:
+        return stem, "." + ext
+    return name, ""
+
+
+def clean_name(name: str) -> str:
+    stem, ext = split_ext(name)
+    s = stem
+    s = re.sub(r"^\[[^\]]{1,24}\]\s*", "", s)
+    s = re.sub(r"^【[^】]{1,24}】\s*", "", s)
+    s = re.sub(r"^[\w.-]{2,40}@", "", s)
+    s = _BRACKET_AD.sub("", s)
+    s = s.replace("_", " ")
+    s = re.sub(r"\s{2,}", " ", s).strip(" -_.")
+    return (s + ext) if s else name
+
+
+def ai_clean(name: str) -> str | None:
+    if not (AI_BASE and AI_KEY):
+        return None
+    payload = {
+        "model": AI_MODEL,
+        "temperature": 0.2,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是文件命名助手。把用户给的影视/资源文件名改写成规范名称："
+                    "保留作品名、年份、分辨率、片源、编码、字幕等有用信息；"
+                    "删除网址、站点名、广告语、@前缀、无意义符号；"
+                    "保持原有扩展名不变；不要加引号或解释；只输出一行文件名。"
+                ),
+            },
+            {"role": "user", "content": name},
+        ],
+    }
+    req = urllib.request.Request(
+        AI_BASE + "/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + AI_KEY,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode())
+        text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    except Exception:  # noqa: BLE001
+        return None
+    text = text.strip().splitlines()[0].strip().strip('"').strip("`")
+    text = re.sub(r'[<>|*?"\\/:]', "", text).strip()
+    if not text:
+        return None
+    stem, ext = split_ext(name)
+    if ext and not text.lower().endswith(ext.lower()):
+        text = split_ext(text)[0] + ext
+    return text[:255]
+
+
+class RenameSuggestReq(BaseModel):
+    name: str
+
+
+@app.post("/rename/suggest")
+def rename_suggest(req: RenameSuggestReq):
+    src = (req.name or "").strip()
+    if not src:
+        raise HTTPException(400, "缺少文件名")
+    ai_name = ai_clean(src)
+    return {"suggested": ai_name or clean_name(src), "ai": bool(ai_name)}
+
+
+class RenameApplyReq(BaseModel):
+    file_id: str
+    name: str
+
+
+@app.post("/rename/apply")
+def rename_apply(req: RenameApplyReq):
+    fid = (req.file_id or "").strip()
+    name = (req.name or "").strip()
+    if not fid or not name:
+        raise HTTPException(400, "参数不完整")
+    if len(name) > 255:
+        raise HTTPException(400, "名称太长")
+    c = get_client()
+    r = c.fs_rename((fid, name))
+    if not r.get("state"):
+        raise HTTPException(400, str(r.get("error") or r))
+    return {"ok": True, "name": name}
 
 
 # ---------- 任务 ----------
