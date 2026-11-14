@@ -1,0 +1,17 @@
+# secrets / runtime data
+cookies.txt
+settings.json
+env
+initial_password.txt
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/

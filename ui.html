@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="115云下载">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>115 云下载</title>
+<style>
+:root{--blue:#0a84ff;--bg:#f2f2f7;--card:#fff;--text:#111;--sub:#8e8e93;--line:#e5e5ea}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);
+ font:16px/1.45 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+ padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{padding:18px 18px 10px}
+h1{font-size:24px;margin:0;letter-spacing:.2px}
+.sub{font-size:13px;color:var(--sub);margin-top:2px}
+main{padding:0 14px 40px}
+.card{background:var(--card);border-radius:14px;overflow:hidden;margin-bottom:14px}
+textarea{width:100%;border:none;outline:none;resize:none;font:16px/1.5 inherit;
+ background:transparent;padding:15px 16px;min-height:92px}
+textarea::placeholder{color:#b0b0b6}
+.inside{display:flex;gap:10px;padding:0 12px 12px}
+button{font:16px inherit;border:none;border-radius:12px;background:var(--blue);color:#fff;
+ padding:14px 18px;width:100%;font-weight:600}
+button:active{opacity:.85}
+button.ghost{background:#f2f2f7;color:var(--blue);font-weight:500}
+button:disabled{opacity:.4}
+.inside>button{flex:1}
+button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
+.dest{display:flex;align-items:center;gap:12px;padding:16px;cursor:pointer}
+.dest .ico{font-size:20px}
+.dest .txt{flex:1;min-width:0}
+.dest .lab{font-size:12px;color:var(--sub)}
+.dest .val{font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dest .chev{color:#c7c7cc}
+.hint{font-size:13px;color:var(--sub);padding:6px 4px 8px;display:flex;justify-content:space-between}
+.hint u{text-decoration:none;color:var(--blue)}
+.task{padding:13px 16px;border-bottom:1px solid var(--line)}
+.task:last-child{border-bottom:none}
+.tname{font-size:15px;word-break:break-all;line-height:1.35}
+.tmeta{font-size:12px;color:var(--sub);margin-top:4px;display:flex;justify-content:space-between}
+.bar{height:3px;background:#eee;border-radius:2px;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--blue);width:0}
+.tabs u{margin-left:12px}
+.tabs u.on{font-weight:600}
+.toggle{cursor:pointer;user-select:none}
+.toggle i{font-style:normal;color:var(--sub);font-size:12px;margin-left:2px}
+.hist{padding:13px 16px;border-bottom:1px solid var(--line)}
+.hist:last-child{border-bottom:none}
+.hname{font-size:15px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;
+ -webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+.hmeta{font-size:12px;color:var(--sub);margin-top:5px;display:flex;justify-content:space-between}
+.empty{padding:18px 16px;color:var(--sub);font-size:14px}
+.foot{text-align:center;font-size:13px;color:var(--sub);padding:6px 0 12px}
+.foot a{color:var(--blue);text-decoration:none}
+#toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%) translateY(20px);
+ background:rgba(0,0,0,.84);color:#fff;padding:12px 20px;border-radius:12px;font-size:14px;
+ opacity:0;transition:.25s;pointer-events:none;max-width:86%;text-align:center;z-index:30}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#mask{position:fixed;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;
+ transition:.25s;z-index:20}
+#mask.show{opacity:1;pointer-events:auto}
+#sheet{position:fixed;left:0;right:0;bottom:0;background:var(--bg);
+ border-radius:18px 18px 0 0;transform:translateY(102%);transition:.28s cubic-bezier(.3,.9,.4,1);
+ z-index:21;max-height:78vh;display:flex;flex-direction:column;
+ padding-bottom:env(safe-area-inset-bottom)}
+#sheet.show{transform:translateY(0)}
+.sheetHead{padding:16px 18px 10px;display:flex;align-items:center;gap:10px}
+.sheetHead b{font-size:17px}
+.sheetHead .x{margin-left:auto;color:var(--blue);font-size:15px;cursor:pointer}
+.crumb{font-size:13px;color:var(--sub);padding:0 18px 10px;word-break:break-all}
+.crumb b{color:var(--blue);font-weight:500}
+#sheetList{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:0 14px 12px}
+.sheetFoot{padding:10px 14px calc(14px + env(safe-area-inset-bottom));background:var(--bg)}
+.row{display:flex;gap:10px}
+.row>button{flex:1}
+.sheetFoot button{font-size:15px;padding:13px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sheetFoot button.ghost{background:#fff;border:1px solid var(--line)}
+.folder{display:flex;align-items:center;gap:12px;padding:15px 16px;border-bottom:1px solid var(--line);
+ font-size:17px;cursor:pointer;background:var(--card)}
+.folder:first-child{border-radius:14px 14px 0 0}
+.folder:last-child{border-bottom:none;border-radius:0 0 14px 14px}
+.folder:active{background:#f0f0f5}
+.chev{margin-left:auto;color:#c7c7cc}
+.pickwrap{padding:12px 0 0}
+.folder.new .plus{color:var(--blue);font-size:19px;font-weight:600}
+#dlgMask{position:fixed;inset:0;background:rgba(0,0,0,.4);opacity:0;pointer-events:none;transition:.2s;z-index:40}
+#dlgMask.show{opacity:1;pointer-events:auto}
+#dlg{position:fixed;left:50%;top:50%;transform:translate(-50%,-46%) scale(.96);width:86%;max-width:340px;
+ background:#fff;border-radius:16px;padding:20px;z-index:41;opacity:0;pointer-events:none;
+ transition:.2s;box-shadow:0 20px 50px rgba(0,0,0,.2)}
+#dlg.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+#dlg h3{margin:0 0 14px;font-size:17px}
+#dlg input{width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;
+ font:16px inherit;outline:none;background:#fafafa}
+#dlg input:focus{border-color:var(--blue);background:#fff}
+#dlg .row{margin-top:14px}
+</style>
+</head>
+<body>
+<header>
+  <h1>115 云下载</h1>
+  <div class="sub">粘贴链接 → 选文件夹 → 开始下载</div>
+</header>
+
+<main>
+  <div class="card">
+    <textarea id="url" placeholder="在这里粘贴磁力 / HTTP / FTP / 电驴链接&#10;支持一次粘贴多条"></textarea>
+    <div class="inside">
+      <button class="ghost" id="paste">粘贴</button>
+      <button id="add">开始下载</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="dest" id="dest">
+      <div class="ico">📁</div>
+      <div class="txt">
+        <div class="lab">保存到</div>
+        <div class="val" id="destName">根目录</div>
+      </div>
+      <div class="chev">›</div>
+    </div>
+  </div>
+
+  <div class="hint"><span>进行中的任务</span><u id="refresh">刷新</u></div>
+  <div class="card" id="tasks"><div class="empty">暂无</div></div>
+
+  <div class="hint">
+    <span id="histToggle" class="toggle">历史记录 <i id="histArrow">▸</i></span>
+    <span class="tabs" id="histTabs" style="display:none">
+      <u class="on" data-stat="11">已完成</u>
+      <u data-stat="9">失败</u>
+    </span>
+  </div>
+  <div id="histBody" style="display:none">
+    <div class="card" id="history"><div class="empty">加载中…</div></div>
+    <button class="ghost" id="more" style="margin-bottom:16px">加载更多</button>
+  </div>
+
+  <div class="foot">
+    <a href="/password">修改密码</a> · <a href="/logout">退出登录</a> · <a href="/qr">115 登录</a> · <a href="/admin">后台</a>
+  </div>
+</main>
+
+<div id="mask"></div>
+<div id="sheet">
+  <div class="sheetHead">
+    <b>选择文件夹</b>
+    <span class="x" id="done">完成</span>
+  </div>
+  <div class="crumb" id="crumb"></div>
+  <div id="sheetList"></div>
+  <div class="sheetFoot">
+    <div class="row">
+      <button class="ghost" id="remember">☆ 记住</button>
+      <button id="useHere">✓ 就存到这里</button>
+    </div>
+  </div>
+</div>
+<div id="dlgMask"></div>
+<div id="dlg">
+  <h3>新建文件夹</h3>
+  <input id="dlgInput" maxlength="255" placeholder="文件夹名称">
+  <div class="row">
+    <button class="ghost" id="dlgCancel">取消</button>
+    <button id="dlgOk">创建</button>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const $ = s => document.querySelector(s);
+let cid = "0";
+let stack = [{cid:"0", name:"根目录"}];
+let pickerStack = [{cid:"0", name:"根目录"}];
+let remembered = {cid:"0", name:"根目录"};
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function toast(msg, ms=2400){
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove("show"), ms);
+}
+
+async function api(path, method="GET", body){
+  const headers = {"Content-Type":"application/json"};
+  if(TOKEN) headers["X-Token"] = TOKEN;
+  const r = await fetch(path, {method, headers,
+    body: body ? JSON.stringify(body) : undefined});
+  let data = {};
+  try{ data = await r.json(); }catch(e){}
+  if(r.status === 401){ location.href = "/login"; throw new Error("需要登录"); }
+  if(!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+  return data;
+}
+
+function setDest(name){
+  $("#destName").textContent = name;
+}
+
+/* ---------- 文件夹选择器 ---------- */
+function renderPicker(){
+  const top = pickerStack[pickerStack.length-1];
+  $("#crumb").innerHTML = pickerStack.map((s,i)=>
+    (i?'<span> › </span>':'') + `<b data-i="${i}">${esc(s.name)}</b>`).join("");
+  $("#crumb").querySelectorAll("b").forEach(el=>{
+    el.onclick = () => { const i=+el.dataset.i; pickerStack = pickerStack.slice(0,i+1); loadPicker(); };
+  });
+  $("#useHere").textContent = `✓ 就存到「${top.name}」`;
+  $("#remember").textContent = (remembered.cid === top.cid) ? "★ 已记住" : "☆ 记住";
+  return top;
+}
+
+const FOLDER_CACHE_MS = 10 * 60 * 1000;
+
+function folderCacheGet(cid){
+  try{
+    const c = JSON.parse(localStorage.getItem("fld:" + cid) || "null");
+    if(c && Date.now() - c.t < FOLDER_CACHE_MS) return c.list;
+  }catch(e){}
+  return null;
+}
+function folderCacheSet(cid, list){
+  try{ localStorage.setItem("fld:" + cid, JSON.stringify({t: Date.now(), list})); }catch(e){}
+}
+
+function renderFolderList(list, top){
+  let html = `<div class="folder new" id="newFolder">
+      <div class="plus">＋</div><div>新建文件夹</div></div>`;
+  html += list.map(f=>
+    `<div class="folder" data-cid="${esc(f.cid)}" data-name="${esc(f.name)}">
+      <div>📁</div><div>${esc(f.name)}</div><div class="chev">›</div></div>`).join("");
+  if(!list.length) html += '<div class="empty">这个文件夹里没有子文件夹</div>';
+  $("#sheetList").innerHTML = html;
+  $("#sheetList").querySelectorAll(".folder").forEach(el=>{
+    if(el.id === "newFolder") return;
+    el.onclick = () => { pickerStack.push({cid:el.dataset.cid, name:el.dataset.name}); loadPicker(); };
+  });
+  $("#newFolder").onclick = openNewFolder;
+}
+
+function openNewFolder(){
+  $("#dlgInput").value = "";
+  $("#dlgMask").classList.add("show");
+  $("#dlg").classList.add("show");
+  setTimeout(()=>$("#dlgInput").focus(), 120);
+}
+function closeNewFolder(){
+  $("#dlgMask").classList.remove("show");
+  $("#dlg").classList.remove("show");
+}
+async function createFolder(){
+  const name = $("#dlgInput").value.trim();
+  if(!name){ toast("请输入文件夹名称"); return; }
+  const parent = pickerStack[pickerStack.length-1].cid;
+  const btn = $("#dlgOk");
+  btn.disabled = true; btn.textContent = "创建中…";
+  try{
+    await api("/mkdir", "POST", {cid: parent, name});
+    localStorage.removeItem("fld:" + parent);
+    closeNewFolder();
+    toast(`已创建「${name}」`, 1800);
+    loadPicker();
+  }catch(e){
+    toast("创建失败：" + e.message, 3200);
+  }finally{
+    btn.disabled = false; btn.textContent = "创建";
+  }
+}
+
+async function loadPicker(){
+  const top = renderPicker();
+  const cached = folderCacheGet(top.cid);
+  if(cached) renderFolderList(cached, top);
+  else $("#sheetList").innerHTML = '<div class="empty">加载中…</div>';
+  try{
+    const r = await api(`/folders?cid=${encodeURIComponent(top.cid)}`);
+    const list = r.folders || [];
+    folderCacheSet(top.cid, list);
+    renderFolderList(list, top);
+  }catch(e){
+    if(!cached) $("#sheetList").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`;
+  }
+}
+
+function openSheet(){
+  pickerStack = stack.map(s=>({...s}));
+  $("#mask").classList.add("show");
+  $("#sheet").classList.add("show");
+  loadPicker();
+}
+function closeSheet(){
+  $("#mask").classList.remove("show");
+  $("#sheet").classList.remove("show");
+}
+
+/* ---------- 任务 ---------- */
+async function loadTasks(){
+  try{
+    const r = await api("/tasks?stat=12");
+    const list = r.tasks || [];
+    if(!list.length){ $("#tasks").innerHTML = '<div class="empty">暂无进行中的任务</div>'; return; }
+    $("#tasks").innerHTML = list.slice(0,8).map(t=>{
+      const p = Math.max(0, Math.min(100, Number(t.percent||0)));
+      const size = t.size ? (t.size/1073741824).toFixed(2)+" GB" : "";
+      return `<div class="task"><div class="tname">${esc(t.name||t.info_hash)}</div>
+        <div class="tmeta"><span>${p.toFixed(1)}%</span><span>${size}</span></div>
+        <div class="bar"><i style="width:${p}%"></i></div></div>`;
+    }).join("");
+  }catch(e){}
+}
+
+/* ---------- 历史记录 ---------- */
+let histStat = 11, histPage = 1, histCount = 0;
+let histOpen = localStorage.getItem("histOpen") === "1";
+let histLoaded = false;
+
+function applyHistOpen(){
+  $("#histBody").style.display = histOpen ? "block" : "none";
+  $("#histTabs").style.display = histOpen ? "inline" : "none";
+  $("#histArrow").textContent = histOpen ? "▾" : "▸";
+  if(histOpen && !histLoaded){ histLoaded = true; loadHistory(true); }
+}
+
+function fmtDate(ts){
+  if(!ts) return "";
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function fmtSize(n){
+  if(!n) return "";
+  const g = n / 1073741824;
+  return g >= 1 ? g.toFixed(2) + " GB" : (n / 1048576).toFixed(0) + " MB";
+}
+
+async function loadHistory(reset){
+  if(reset){
+    histPage = 1;
+    $("#history").innerHTML = '<div class="empty">加载中…</div>';
+  }
+  try{
+    const r = await api(`/tasks?page=${histPage}&stat=${histStat}`);
+    const list = r.tasks || [];
+    histCount = r.count || 0;
+    const html = list.map(t=>`<div class="hist">
+        <div class="hname">${esc(t.name || t.info_hash)}</div>
+        <div class="hmeta"><span>${fmtDate(t.add_time)}</span><span>${fmtSize(t.size)}</span></div>
+      </div>`).join("");
+    if(reset) $("#history").innerHTML = html || '<div class="empty">暂无记录</div>';
+    else $("#history").insertAdjacentHTML("beforeend", html);
+    const more = histPage * 30 < histCount && list.length > 0;
+    $("#more").style.display = more ? "block" : "none";
+    $("#more").textContent = `加载更多（共 ${histCount} 条）`;
+  }catch(e){
+    if(reset) $("#history").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`;
+  }
+}
+
+(async function(){
+  const h = location.hash || "";
+  if(h.startsWith("#url=")){
+    let v = h.slice(5);
+    try { v = decodeURIComponent(v); } catch(e){}
+    if(v.trim()){
+      $("#url").value = v.trim();
+      setTimeout(()=>$("#url").scrollIntoView({block:"center", behavior:"smooth"}), 120);
+      toast("已带入链接，选好文件夹后点「开始下载」", 2600);
+    }
+  }
+  $("#dest").onclick = openSheet;
+  $("#mask").onclick = closeSheet;
+  $("#done").onclick = closeSheet;
+  $("#dlgMask").onclick = closeNewFolder;
+  $("#dlgCancel").onclick = closeNewFolder;
+  $("#dlgOk").onclick = createFolder;
+  $("#dlgInput").addEventListener("keydown", e=>{ if(e.key === "Enter") createFolder(); });
+  $("#useHere").onclick = () => {
+    const top = pickerStack[pickerStack.length-1];
+    stack = pickerStack.slice();
+    cid = top.cid;
+    setDest(stack.map(s=>s.name).join(" / "));
+    closeSheet();
+    toast("保存位置：" + top.name, 1500);
+  };
+  $("#remember").onclick = async () => {
+    const top = pickerStack[pickerStack.length-1];
+    try{
+      await api("/default", "PUT", {cid: top.cid, name: top.name, path: pickerStack});
+      remembered = {cid: top.cid, name: top.name};
+      renderPicker();
+      toast(`已记住「${top.name}」，下次默认打开这里`, 2200);
+    }catch(e){ toast("记住失败：" + e.message, 2500); }
+  };
+  $("#refresh").onclick = loadTasks;
+  $("#histToggle").onclick = () => {
+    histOpen = !histOpen;
+    localStorage.setItem("histOpen", histOpen ? "1" : "0");
+    applyHistOpen();
+  };
+  $("#more").onclick = () => { histPage++; loadHistory(false); };
+  document.querySelectorAll(".tabs u").forEach(el=>{
+    el.onclick = () => {
+      document.querySelectorAll(".tabs u").forEach(x=>x.classList.remove("on"));
+      el.classList.add("on");
+      histStat = +el.dataset.stat;
+      loadHistory(true);
+    };
+  });
+  $("#paste").onclick = async () => {
+    try{ $("#url").value = await navigator.clipboard.readText(); }
+    catch(e){ $("#url").focus(); toast("长按输入框粘贴", 1800); }
+  };
+  $("#add").onclick = async () => {
+    const urls = $("#url").value.split("\n").map(s=>s.trim()).filter(Boolean);
+    if(!urls.length){ toast("先粘贴链接"); $("#url").focus(); return; }
+    const btn = $("#add"); btn.disabled = true; btn.textContent = "提交中…";
+    try{
+      const r = await api("/add", "POST", {urls, cid});
+      const ok = (r.results||[]).filter(x=>x.state).length;
+      if(ok){ toast(`已添加 ${ok} 个，保存到「${stack[stack.length-1].name}」`, 3000); $("#url").value="";
+        histLoaded = false; if(histOpen) loadHistory(true); }
+      else { toast("没加上：" + String(JSON.stringify((r.results||[])[0]||{})).slice(0,70), 3500); }
+      loadTasks();
+    }catch(e){ toast("失败：" + e.message, 3500); }
+    finally{ btn.disabled = false; btn.textContent = "开始下载"; }
+  };
+  setDest("根目录");
+  try{
+    const d = await api("/default");
+    remembered = {cid: d.cid, name: d.name};
+    if(d.path && d.path.length > 1){
+      stack = d.path.map(x=>({cid:x.cid, name:x.name}));
+      cid = stack[stack.length-1].cid;
+      setDest(stack.map(s=>s.name).join(" / "));
+    } else if(d.cid && d.cid !== "0"){
+      stack = [{cid:"0", name:"根目录"}, {cid:d.cid, name:d.name}];
+      cid = d.cid;
+      setDest(d.name);
+    }
+  }catch(e){}
+  loadTasks();
+  api("/folders?cid=0").then(r=>folderCacheSet("0", r.folders || [])).catch(()=>{});
+  if(cid !== "0") api(`/folders?cid=${encodeURIComponent(cid)}`).then(r=>folderCacheSet(cid, r.folders || [])).catch(()=>{});
+  applyHistOpen();
+})();
+</script>
+</body>
+</html>

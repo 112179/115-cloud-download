@@ -1,0 +1,16 @@
+[Unit]
+Description=115 Cloud Download Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/115dl
+EnvironmentFile=/opt/115dl/env
+ExecStart=/opt/115dl/venv/bin/uvicorn app:app --host 127.0.0.1 --port 7875
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+fastapi>=0.115
+uvicorn>=0.30
+p115client>=0.0.9.7
+segno>=1.6
