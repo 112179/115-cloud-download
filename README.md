@@ -68,6 +68,22 @@ curl -X PUT http://127.0.0.1:7875/cookie \
   -d '{"cookie":"UID=...; CID=...; SEID=...; KID=..."}'
 ```
 
+## 部署方式
+
+项目本身只是一个常驻的 Python 进程，硬性要求只有两点：**能长期在线**、**能访问 115**。VPS 不是必须的。
+
+| 方案 | 可行性 | 说明 |
+|---|---|---|
+| 家里的 NAS / 软路由 / 树莓派 / 旧电脑 | ✅ 推荐 | 国内网络访问 115 最快，也没有境外 IP 风控；配合 Cloudflare Tunnel 不需要公网 IP |
+| 云服务器（VPS） | ✅ 可以 | 随时可用，但跨境到 115 的延迟 1–2 秒，扫码登录偶尔触发风控 |
+| 免费 PaaS（Render / Railway / Fly.io） | ⚠️ 能用但别扭 | 免费实例会休眠，冷启动几十秒；数据中心 IP 更容易被 115 拦 |
+| Cloudflare Workers | ❌ 不行 | 跑不了 Python 和 p115client，除非把 ECDH/RSA 整套重写成 JS |
+| iPhone 上的 iSH | ⚠️ 仅临时 | iOS 会挂起后台进程，快捷指令调用时服务可能已经睡了 |
+
+最低配置：1 核 / 512MB 内存 / 100MB 磁盘，不需要数据库，全部状态就是 `cookies.txt` + `settings.json` 两个文件。
+
+没有公网 IP 也没关系：Cloudflare Tunnel 由内网机器主动向外连接，不需要路由器开端口，免费。
+
 ## 部署（systemd + Cloudflare 隧道）
 
 ```bash
