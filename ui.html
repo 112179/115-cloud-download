@@ -279,7 +279,7 @@ function renderPicker(){
   return top;
 }
 
-const FOLDER_CACHE_MS = 10 * 60 * 1000;
+const FOLDER_CACHE_MS = 7 * 24 * 60 * 60 * 1000; // 本地先渲染，服务端负责后台校准
 
 function folderCacheGet(cid){
   try{
@@ -336,6 +336,28 @@ async function createFolder(){
   }
 }
 
+function inFolder(cid){
+  const cur = pickerStack[pickerStack.length-1];
+  return cur && String(cur.cid) === String(cid);
+}
+
+// 打开选择器后，悄悄把最近的几个子目录先缓存好，点进去就不用等
+let prefetchToken = 0;
+async function prefetchChildren(list, cid){
+  const targets = list.filter(f=>!folderCacheGet(f.cid)).slice(0, 6);
+  if(!targets.length) return;
+  const token = ++prefetchToken;
+  for(const f of targets){
+    if(token !== prefetchToken) return;
+    if(!$("#sheet").classList.contains("show")) return;
+    try{
+      const r = await api(`/folders?cid=${encodeURIComponent(f.cid)}`);
+      folderCacheSet(f.cid, r.folders || []);
+    }catch(e){}
+    await new Promise(r=>setTimeout(r, 350));
+  }
+}
+
 async function loadPicker(){
   const top = renderPicker();
   const cached = folderCacheGet(top.cid);
@@ -345,9 +367,27 @@ async function loadPicker(){
     const r = await api(`/folders?cid=${encodeURIComponent(top.cid)}`);
     const list = r.folders || [];
     folderCacheSet(top.cid, list);
-    renderFolderList(list, top);
+    if(inFolder(top.cid)) renderFolderList(list, top);
+    prefetchChildren(list, top.cid);
+    if(r.refreshing) pollFolder(top.cid, r.ts || 0, top);
   }catch(e){
     if(!cached) $("#sheetList").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function pollFolder(cid, ts, top){
+  for(let i=0;i<4;i++){
+    await new Promise(r=>setTimeout(r, 1500));
+    if(!inFolder(cid)) return;
+    try{
+      const r = await api(`/folders?cid=${encodeURIComponent(cid)}`);
+      if((r.ts || 0) > ts){
+        const list = r.folders || [];
+        folderCacheSet(cid, list);
+        if(inFolder(cid)) renderFolderList(list, top);
+        if(!r.refreshing) return;
+      }
+    }catch(e){ return; }
   }
 }
 

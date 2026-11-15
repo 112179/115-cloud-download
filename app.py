@@ -100,7 +100,54 @@ app = FastAPI(title="115 cloud download relay")
 _client: P115Client | None = None
 _login_state: dict = {}
 _folder_cache: dict[str, tuple[float, dict]] = {}
-FOLDER_TTL = 600  # 文件夹列表缓存 10 分钟
+FOLDER_TTL = 300  # 超过 5 分钟就在后台刷新，但照样先返回旧数据
+FOLDERS_CACHE_FILE = BASE / "folders_cache.json"
+_folder_refreshing: set[str] = set()
+
+
+def load_folder_cache():
+    """启动时从磁盘恢复目录缓存，重启后依然秒开"""
+    try:
+        raw = json.loads(FOLDERS_CACHE_FILE.read_text())
+        for k, v in raw.items():
+            _folder_cache[str(k)] = (float(v[0]), v[1])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def save_folder_cache():
+    try:
+        items = sorted(_folder_cache.items(), key=lambda kv: kv[1][0], reverse=True)[:300]
+        FOLDERS_CACHE_FILE.write_text(
+            json.dumps({k: [v[0], v[1]] for k, v in items}, ensure_ascii=False)
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def fetch_folder(cid: str) -> dict:
+    items = list_dir_items(cid, 1150, 0)
+    return {
+        "cid": str(cid),
+        "folders": [{"cid": it["id"], "name": it["name"]} for it in items if it["is_dir"]],
+    }
+
+
+def refresh_folder_bg(cid: str):
+    if cid in _folder_refreshing:
+        return
+    _folder_refreshing.add(cid)
+    try:
+        data = fetch_folder(cid)
+        _folder_cache[cid] = (time.time(), data)
+        save_folder_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        _folder_refreshing.discard(cid)
+
+
+load_folder_cache()
 
 
 # ---------- 设置与口令 ----------
@@ -643,16 +690,30 @@ def clear_default():
 # ---------- 目录 ----------
 @app.get("/folders")
 def folders(cid: str = "0", refresh: int = 0):
-    now = time.time()
-    if not refresh:
-        hit = _folder_cache.get(cid)
-        if hit and now - hit[0] < FOLDER_TTL:
-            return {**hit[1], "cached": True}
-    items = list_dir_items(cid, 1150, 0)
-    dirs = [{"cid": it["id"], "name": it["name"]} for it in items if it["is_dir"]]
-    data = {"cid": str(cid), "folders": dirs}
-    _folder_cache[cid] = (now, data)
-    return {**data, "cached": False}
+    """永远先给缓存，过期了在后台刷新，不让用户等"""
+    cid = str(cid)
+    hit = _folder_cache.get(cid)
+    if hit:
+        age = time.time() - hit[0]
+        stale = age > FOLDER_TTL
+        if refresh or stale:
+            threading.Thread(target=refresh_folder_bg, args=(cid,), daemon=True).start()
+        return {
+            **hit[1],
+            "cached": True,
+            "ts": int(hit[0]),
+            "stale": stale,
+            "refreshing": cid in _folder_refreshing or stale or bool(refresh),
+        }
+    try:
+        data = fetch_folder(cid)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"目录读取失败：{e}") from e
+    _folder_cache[cid] = (time.time(), data)
+    save_folder_cache()
+    return {**data, "cached": False, "ts": int(time.time()), "stale": False, "refreshing": False}
 
 
 class MkdirReq(BaseModel):
@@ -672,6 +733,7 @@ def mkdir(req: MkdirReq):
     if not r.get("state"):
         raise HTTPException(400, str(r.get("error") or r))
     _folder_cache.pop(req.cid, None)
+    save_folder_cache()
     return {"ok": True, "cid": str(r.get("cid") or ""), "name": name}
 
 
@@ -1544,6 +1606,7 @@ def set_cookie(req: CookieReq):
     COOKIE_FILE.write_text(line)
     _client = P115Client(line)
     _folder_cache.clear()
+    save_folder_cache()
     return {"ok": True}
 
 # ---------- 后台 ----------
@@ -1842,10 +1905,10 @@ ensure_auth()
 
 
 def _warm_folders():
-    """启动后预热根目录缓存，第一次打开文件夹选择器就能秒开"""
+    """启动后预热根目录：有磁盘缓存就先用着，再悄悄更新"""
     time.sleep(1)
     try:
-        folders("0")
+        refresh_folder_bg("0")
     except Exception:  # noqa: BLE001
         pass
 
