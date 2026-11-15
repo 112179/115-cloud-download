@@ -1539,6 +1539,22 @@ def add(req: AddReq):
     return {"results": out}
 
 
+class ClearTasksReq(BaseModel):
+    flag: int = 1  # 0 已完成 / 1 全部 / 2 失败 / 3 进行中
+
+
+@app.post("/tasks/clear")
+def clear_tasks(req: ClearTasksReq):
+    c = get_client()
+    try:
+        r = c.clouddownload_task_clear(int(req.flag))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"清空失败：{e}") from e
+    if not r.get("state"):
+        raise HTTPException(400, str(r.get("error") or r))
+    return {"ok": True, "flag": int(req.flag)}
+
+
 @app.get("/tasks")
 def tasks(page: int = 1, stat: int = 0):
     c = get_client()
