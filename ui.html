@@ -28,6 +28,8 @@ button:active{opacity:.85}
 button.ghost{background:#f2f2f7;color:var(--blue);font-weight:500}
 button:disabled{opacity:.4}
 .inside>button{flex:1}
+.inside>#add{flex:2}
+button.ghost:disabled{opacity:.45}
 button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
 .dest{display:flex;align-items:center;gap:12px;padding:16px;cursor:pointer}
 .dest .ico{font-size:20px}
@@ -148,12 +150,10 @@ button.small{width:auto;padding:10px 16px;font-size:14px;border-radius:10px}
 
 <main>
   <div class="card">
-    <div class="taWrap">
-      <textarea id="url" placeholder="在这里粘贴磁力 / HTTP / FTP / 电驴链接&#10;支持一次粘贴多条"></textarea>
-      <span id="clearInput" title="清空输入">×</span>
-    </div>
+    <textarea id="url" placeholder="在这里粘贴磁力 / HTTP / FTP / 电驴链接&#10;支持一次粘贴多条"></textarea>
     <div class="inside">
       <button class="ghost" id="paste">粘贴</button>
+      <button class="ghost" id="clearLinks" disabled>清空</button>
       <button id="add">开始下载</button>
     </div>
   </div>
@@ -673,12 +673,11 @@ async function sendChat(){
       toast(`已记住「${top.name}」，下次默认打开这里`, 2200);
     }catch(e){ toast("记住失败：" + e.message, 2500); }
   };
-  $("#url").addEventListener("input", () => {
-    $("#clearInput").classList.toggle("show", !!$("#url").value);
-  });
-  $("#clearInput").onclick = () => {
+  const syncClear = () => { $("#clearLinks").disabled = !$("#url").value.trim(); };
+  $("#url").addEventListener("input", syncClear);
+  $("#clearLinks").onclick = () => {
     $("#url").value = "";
-    $("#clearInput").classList.remove("show");
+    syncClear();
     $("#url").focus();
   };
   $("#refresh").onclick = loadTasks;
@@ -761,6 +760,7 @@ async function sendChat(){
       const links = t.match(/(magnet:\?[^\s]+|ed2k:\/\/[^\s]+|https?:\/\/[^\s]+)/gi) || [];
       if(!links.length){ clipDone = true; return; }
       ta.value = links.join("\n");
+      ta.dispatchEvent(new Event("input", {bubbles:true}));
       clipDone = true;
       toast(`已从剪切板读取 ${links.length} 个链接`, 2000);
     }catch(e){}
